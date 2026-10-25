@@ -1,0 +1,2524 @@
+================================================================================
+DCDNS - THE COMPLETE PROJECT GUIDE
+================================================================================
+What it is, why it exists, how it works, and how to answer questions about it
+
+Last updated: 25 October 2026
+Project location: C:\Users\hkpan\DCDNS
+
+HOW TO USE THIS GUIDE
+---------------------
+- In a hurry? Read sections 1, 2, 3 and 25.
+- Preparing a presentation? Read section 21 (Q&A) and section 22 (pitches).
+- Running the demo? Read section 18.
+- Trying to understand the code? Read sections 5 to 14.
+- Writing a report? Sections 2, 14, 15, 19 and 20 are the important ones.
+
+The guide is deliberately written twice: once in simple language, and once with
+the technical detail. If a sentence sounds too abstract, look for the analogy
+next to it.
+
+
+================================================================================
+1. THE 60-SECOND EXPLANATION
+================================================================================
+
+DCDNS is a working prototype of a permissioned registry for campus DNS names.
+It lets a university root authority delegate control of namespaces (for example
+cs.test and library.test) to departments. Departments and students then register
+names such as techfest.cs.test, prove ownership with Ed25519 signatures, and
+manage those names through a web portal.
+
+The registry is not stored on one server. Three registry nodes replicate a
+signed, ordered log, and a change is accepted only when a majority (2 of 3)
+stores it. Every registry node is also an authoritative DNS server: it answers
+queries from the committed state it holds. A client-facing resolver asks all
+three nodes and returns an answer only when a majority agrees. That means there
+is no single central DNS server to trust, and one lying node cannot change the
+answer a client receives.
+
+In one sentence:
+
+  "DCDNS is a permissioned campus DNS registry where authority is delegated,
+   state is majority-replicated, every node serves DNS, and clients accept an
+   answer only when most nodes agree."
+
+The short version you can say out loud:
+
+  "It is DNS administration without a central DNS server: departments own their
+   part of the namespace, every node can answer, and a majority must agree."
+
+
+================================================================================
+2. WHY WAS THIS PROJECT BUILT?
+================================================================================
+
+2.1 The practical problem
+-------------------------
+A university has one DNS namespace but many departments. Central IT does not
+want to manually create every name. Departments want to manage their own names
+without asking the centre for every change. At the same time, the university
+needs to know:
+
+  - who is allowed to create a name,
+  - who owns an existing name,
+  - who may change where it points,
+  - how a name is revoked when a project ends,
+  - how to prove what happened later,
+  - what happens when a server crashes.
+
+A spreadsheet plus email does not answer those questions. A normal database
+does not answer them either, because the hard part is authority, not storage.
+
+2.2 The technical problem
+-------------------------
+Normal DNS is hierarchical and authoritative. That is good for resolution, but
+a campus registry also needs delegated administration, cryptographic ownership,
+replication, auditability and revocation. Existing DNS servers can serve a zone
+file, but they do not implement the registry rules. Existing databases can store
+rows, but they do not speak DNS.
+
+The project asks:
+
+  "Can we build a registry that delegates authority to departments, replicates
+   safely across independent nodes, and serves real DNS without a central DNS
+   server?"
+
+2.3 The decentralization requirement
+------------------------------------
+The original goal was not just "decentralize the registry authority". The
+requirement was to decentralize DNS itself as much as is honest and practical
+for this prototype:
+
+  Level 1: one central registry and one central DNS server.
+  Level 2: delegated registry authority, but one DNS publisher/front-end.
+  Level 3: every registry node serves DNS from its own committed state, and a
+           client-facing resolver requires majority agreement.  <-- THIS PROJECT
+  Level 4: peer-to-peer discovery / DHT, with no configured membership.
+           Not built. It is a different project with different trade-offs.
+
+DCDNS implements Level 3. There is no separate DNS publisher process. Each node
+has its own DNS responder, and the client resolver compares the answers.
+
+2.4 Why this is a useful prototype
+----------------------------------
+It demonstrates, in one runnable system:
+
+  - delegated namespace authority,
+  - Ed25519-signed operations,
+  - majority-replicated state,
+  - leader takeover and follower catch-up,
+  - per-node authoritative DNS,
+  - majority agreement over DNS answers,
+  - a real web UI,
+  - automated security experiments,
+  - honest documentation of limitations.
+
+It is meant to be demonstrated, not just described. Every claim in the UI has a
+test or an experiment behind it.
+
+
+================================================================================
+3. WHAT THE PROJECT ACTUALLY DOES
+================================================================================
+
+3.1 User-facing features
+------------------------
+- Register a name inside a namespace you are allowed to use.
+- Update the IPv4 address (A record) of a name you own.
+- Transfer ownership to another participant; the recipient must accept.
+- Revoke a name; it is withdrawn from DNS and cannot be re-registered.
+- Delegate a sub-namespace to another controller.
+- Grant a participant permission to register names in a namespace.
+- View the operation history of a name.
+- View the global audit trail and verify its hash chain.
+- View the health of all nodes, their DNS ports and revisions.
+- See recent DNS queries and how each node voted.
+- Run security experiments from the browser or the command line.
+
+3.2 System features
+-------------------
+- Three independent registry processes on ports 9101, 9102 and 9103.
+- A signed, ordered operation log on every node.
+- Majority commit: a write succeeds only after 2 of 3 nodes store it.
+- Automatic coordinator (leader) takeover when the current one dies.
+- Followers catch up after a restart.
+- Each node answers DNS on its own UDP port: 5354, 5355 and 5356.
+- A client-facing quorum resolver on UDP 5353.
+- The resolver requires 2 of 3 configured nodes to agree.
+- If no majority agrees, the resolver returns SERVFAIL.
+- A metrics endpoint on http://127.0.0.1:5380/metrics.
+- A portal on http://127.0.0.1:8000.
+- A one-command launcher with a supervisor that restarts crashed children.
+- A loopback-only chaos endpoint for the lying-node demonstration.
+
+3.3 What a normal demo looks like
+---------------------------------
+1. Start the system with: python run_demo.py --fresh
+2. Open http://127.0.0.1:8000.
+3. The dashboard shows three nodes, one coordinator, all at the same revision.
+4. It also shows three per-node DNS authorities and a quorum resolver.
+5. Register myproject.cs.test as Alice.
+6. Query it with: python -m dcdns.dig myproject.cs.test --all
+7. All three nodes and the quorum resolver return 10.20.5.50.
+8. Change the address; within a fraction of a second the new answer appears.
+9. Switch to Mallory and try to change Alice's name; the registry rejects it.
+10. Run the lying-node experiment; n3 returns a forgery, the resolver returns
+    the honest majority answer.
+11. Revoke the name; it disappears from DNS everywhere.
+12. Stop one node; the other two still answer and still form a DNS majority.
+13. Stop two nodes; writes are refused and DNS returns SERVFAIL.
+
+
+================================================================================
+4. WHAT THIS PROJECT IS NOT
+================================================================================
+
+Be precise about this. It prevents embarrassing questions later.
+
+- It is NOT a blockchain.
+  There are no blocks, no mining, no tokens, no proof-of-work and no public
+  consensus. It is a permissioned registry with a replicated log.
+
+- It is NOT a trustless system.
+  A root authority bootstraps trust. The set of nodes is configured. The demo
+  portal holds private keys. These are deliberate prototype choices.
+
+- It is NOT a peer-to-peer or DHT discovery system.
+  Nodes know each other from configuration. There is no gossip-based membership
+  discovery. Level 4 was explicitly left out.
+
+- It is NOT Byzantine-fault-tolerant consensus.
+  The registry protocol tolerates crashes and omissions, not a node that
+  maliciously violates the replication protocol. The DNS layer can outvote one
+  lying node, but that is a read-time majority check, not BFT consensus.
+
+- It is NOT a production PKI.
+  Key enrolment, recovery, hardware-backed signing and certificate chains are
+  documented as future work, not implemented.
+
+- It is NOT a full DNS implementation.
+  It supports IPv4 A records in the .test zone. There is no AAAA, TXT, CNAME,
+  MX, zone transfer, recursion, DNSSEC or public internet delegation.
+
+- It is NOT a general-purpose registrar.
+  The record policy only permits private/campus IPv4 addresses. That is a
+  feature for a campus registry, not a bug.
+
+- It is NOT a replacement for the university's existing DNS.
+  It is a lab prototype for .test. A real deployment would integrate with the
+  university's owned zone and existing DNS/DHCP infrastructure.
+
+- It is NOT highly available across data centres.
+  All three nodes run on one machine in the demo. Real network partitions are
+  approximated by process death. Throughput and WAN latency are not measured.
+
+
+================================================================================
+5. CORE CONCEPTS IN SIMPLE TERMS
+================================================================================
+
+This section is the vocabulary you need. Read it before the architecture.
+
+5.1 Registry
+------------
+The registry is the "records office" of the system. It stores who controls which
+namespace, who owns which name, what address the name points to, and the history
+of changes.
+
+Analogy: a town hall that keeps property records. DNS is the phone book that
+tells people where the property is.
+
+5.2 DNS
+-------
+DNS (Domain Name System) turns a name such as techfest.cs.test into an IP
+address such as 10.20.5.42. It is the system browsers and applications use.
+
+5.3 Zone
+--------
+A zone is the part of DNS that one server is authoritative for. In this project,
+the zone is the set of active names under .test and their A records.
+
+5.4 Authoritative DNS server
+----------------------------
+An authoritative server owns the data for a zone. It does not ask another server
+for the answer; it answers from its own zone. Each DCDNS registry node is
+authoritative for the .test zone it has committed.
+
+5.5 Recursive resolver / forwarder
+----------------------------------
+A recursive resolver asks other servers on the client's behalf. The DCDNS quorum
+resolver is a forwarder with a vote: it asks all three authoritative nodes and
+returns a majority answer. It is not a full recursive internet resolver.
+
+5.6 Namespace
+-------------
+A namespace is a delegated subtree of names. cs.test is a namespace. team.cs.test
+is a sub-namespace inside it. A namespace has a controller and optional members.
+
+Analogy: a folder. The root gives a department a folder; the department can
+create subfolders and decide who may add files.
+
+5.7 Domain name
+---------------
+A domain name is a fully qualified name such as techfest.cs.test. It has labels
+separated by dots: "techfest", "cs", "test".
+
+5.8 Record
+----------
+A record is the data attached to a name. This project supports one type: an A
+record, which maps a name to an IPv4 address.
+
+5.9 TTL
+-------
+Time To Live. How long a resolver may cache an answer. DCDNS uses 30 seconds.
+After a change, old answers can remain in caches for up to the TTL.
+
+5.10 Delegation
+---------------
+Delegation means giving someone authority over a subtree. The root delegates
+cs.test to the CS department controller. The CS controller can delegate
+team.cs.test to Bob. The parent remains above the child in the tree.
+
+5.11 Controller
+---------------
+The controller of a namespace is the key allowed to manage that namespace:
+delegate sub-namespaces, grant members, update any name inside it, revoke names,
+revoke the namespace, and rotate the controller key.
+
+5.12 Owner
+----------
+The owner of a domain is the key that registered it. The owner can update its
+records, transfer it, and revoke it. Ownership is proven by signatures, not by a
+username and password.
+
+5.13 Member
+-----------
+A member is a participant granted permission to register names in a namespace.
+Alice is a member of cs.test. Membership does not make her the controller.
+
+5.14 Operation
+--------------
+An operation is a signed request to change the registry, for example
+register_domain or transfer_initiate. Every operation has a type, an actor, a
+nonce, a timestamp, a body and a signature.
+
+5.15 Signature
+--------------
+A cryptographic proof that the holder of a private key approved the exact bytes
+of an operation. DCDNS uses Ed25519. Changing one byte invalidates the signature.
+
+5.16 Key pair
+-------------
+A private key (kept secret) and a public key (shared). The public key is the
+identity. The private key signs operations. There is no separate username
+database; a participant IS the holder of a key.
+
+5.17 Fingerprint
+----------------
+A short hash of a public key, used for human comparison, like an SSH fingerprint.
+It is not a secret.
+
+5.18 Nonce
+----------
+A random value included in each operation. The state machine remembers accepted
+nonces, so the same signed operation cannot be replayed a second time.
+
+5.19 Revision
+-------------
+A counter of how many operations have been committed. Revision 8 means eight
+operations have been applied. It is not a timestamp.
+
+5.20 Log and log index
+----------------------
+The log is the ordered list of operations. The log index is the position in that
+list. The commit index is the highest index known to be stored by a majority.
+
+5.21 Quorum
+-----------
+A majority. For three nodes, quorum is 2. A quorum is required to commit a write
+and to accept a DNS answer.
+
+5.22 Coordinator (called "leader" in the code)
+----------------------------------------------
+The node currently allowed to append new entries to the log. It is elected
+deterministically as the lowest-id node among the reachable majority. It is a
+temporary role, not a central owner. The code and current dashboard still say
+"leader"; in this guide I often say "coordinator" because it is a clearer word
+for a temporary write role and avoids the impression of a central server.
+
+5.23 Follower / replica
+-----------------------
+A node that is not currently the coordinator. It accepts writes from clients and
+forwards them to the coordinator, stores replicated entries, applies committed
+state, and answers DNS from its own state.
+
+5.24 Commit
+-----------
+A write is committed when a majority of nodes have stored it. Only committed
+operations are applied to the visible state and DNS.
+
+5.25 Audit chain
+----------------
+A tamper-evident list of accepted operations. Each record contains the hash of
+the previous record. Changing an old record breaks every later hash.
+
+5.26 NOERROR, NXDOMAIN, SERVFAIL
+--------------------------------
+NOERROR: the name exists and here is the answer (or an empty answer).
+NXDOMAIN: the name does not exist.
+SERVFAIL: the resolver could not produce a trustworthy answer (for example, no
+DNS majority or a timeout). SERVFAIL is not proof that the name is revoked.
+
+5.27 .test
+----------
+A reserved top-level domain for testing (RFC 6761). It will never collide with a
+real public name, so it is safe for a lab. The prototype is authoritative for
+.test only.
+
+
+================================================================================
+6. SYSTEM ARCHITECTURE
+================================================================================
+
+6.1 The two planes
+------------------
+Think of the system as two separate planes:
+
+  REGISTRY PLANE (control)             DNS PLANE (answers)
+  --------------------------           -------------------------
+  signed operations                    DNS queries
+  authorization rules                  per-node zone snapshots
+  replicated log                       majority agreement
+  majority commit                      NXDOMAIN / SERVFAIL
+
+The registry decides what is true. DNS distributes what is true. They are
+connected by committed state, not by a shared database.
+
+6.2 Diagram
+-----------
+                           Portal (FastAPI + Jinja2)
+                                      |
+                                      | signed operations (Ed25519)
+                                      v
+                   +------------------+------------------+
+                   |                  |                  |
+              Registry n1        Registry n2        Registry n3
+              API 9101           API 9102           API 9103
+              DNS 5354           DNS 5355           DNS 5356
+                   |                  |                  |
+                   +------ quorum-replicated log --------+
+                                      |
+                           committed registry state
+                                      |
+                   +------------------+------------------+
+                   |                  |                  |
+              DNS responder      DNS responder      DNS responder
+                   |                  |                  |
+                   +-------- client quorum resolver ----+
+                                 UDP 5353
+                                      |
+                              dig / DNS client
+                          (answer only if 2 of 3 agree)
+
+There is no central DNS publisher in this diagram. The old single front-end was
+replaced by per-node responders plus the client-facing majority resolver.
+
+6.3 Components and ports
+------------------------
+Component             Port / URL                  Purpose
+--------------------- --------------------------- ------------------------------
+Portal                 http://127.0.0.1:8000       Web UI and demo actions
+Registry node n1       http://127.0.0.1:9101       API, state, status
+Registry node n2       http://127.0.0.1:9102       API, state, status
+Registry node n3       http://127.0.0.1:9103       API, state, status
+Node n1 DNS            udp/5354                    Authoritative DNS for n1
+Node n2 DNS            udp/5355                    Authoritative DNS for n2
+Node n3 DNS            udp/5356                    Authoritative DNS for n3
+Quorum DNS resolver    udp/5353                    Majority answer to clients
+Quorum metrics         http://127.0.0.1:5380/metrics  Queries, votes, health
+Node data              data/live/n1, n2, n3        Logs and metadata
+Demo identities        identities/                 Ed25519 key files
+
+6.4 Why three nodes?
+--------------------
+Three is the smallest number that demonstrates a real majority:
+
+  - one node down: 2 of 3 still commit and still answer DNS,
+  - two nodes down: no majority, so writes stop and DNS returns SERVFAIL,
+  - one node lying: the other two outvote it,
+  - two nodes lying: they can outvote the honest one (documented boundary).
+
+With one node there is no fault tolerance. With two nodes, a majority is also 2,
+so losing one node stops everything. Three gives a useful trade-off for a demo.
+
+6.5 What talks to what
+----------------------
+- The portal talks to all three node APIs and the quorum metrics endpoint.
+- A client may submit a signed operation to any node.
+- A follower forwards the operation to the coordinator once.
+- Nodes talk to each other over the internal HTTP API for ping, append, log
+  catch-up and state inspection.
+- The quorum resolver sends the same UDP DNS query to all three node responders.
+- The portal reads quorum metrics over HTTP for the dashboard.
+- Nothing in the DNS query path writes to the registry.
+
+6.6 Trust boundaries at a glance
+--------------------------------
+  untrusted client --signed op--> [ verify signature ] --> state machine
+  any node         --append----> [ term / log rules ] --> replicated log
+  DNS client       --query-----> [ 2-of-3 agreement ] --> answer or SERVFAIL
+
+The registry never trusts the transport. Every node verifies every operation
+itself. The DNS resolver never trusts a single node; it requires agreement.
+
+
+================================================================================
+7. TECHNOLOGY STACK: WHAT IS USED AND WHY
+================================================================================
+
+7.1 Python 3.11
+---------------
+The whole prototype is Python. It is readable, has excellent cryptography and
+HTTP libraries, and lets the project focus on the protocol rather than build
+tooling. Performance is not the goal of this prototype.
+
+7.2 FastAPI + Uvicorn
+---------------------
+Used for the node HTTP APIs and the portal. FastAPI gives typed request handling,
+JSON responses and automatic /docs pages. Uvicorn runs the ASGI server.
+
+Used in:
+  dcdns/node.py     registry node API
+  dcdns/portal.py   web portal
+
+7.3 httpx
+---------
+Used for HTTP calls between nodes, from the portal to nodes, and from scripts to
+the cluster. It supports both sync and async clients.
+
+Used in:
+  dcdns/client.py, dcdns/cluster.py, dcdns/node.py, dcdns/portal.py,
+  dcdns/quorum_resolver.py, dcdns/experiments.py
+
+7.4 cryptography
+----------------
+Provides Ed25519 signing and verification. DCDNS does not implement its own
+cryptography; it uses a well-known library.
+
+Used in:
+  dcdns/crypto.py
+
+7.5 Jinja2
+----------
+Server-side HTML templates. No React, no bundler, no CDN. The portal works
+offline and every action is a normal form POST.
+
+Used in:
+  dcdns/templates/*.html
+
+7.6 pytest
+----------
+Runs the unit, wire-format and majority-resolver tests.
+
+Used in:
+  tests/
+
+7.7 Vanilla JavaScript and CSS
+------------------------------
+A small app.js adds live dashboard polling and confirmation dialogs. The portal
+remains usable if JavaScript fails; it only enhances the page.
+
+Used in:
+  dcdns/static/app.js, dcdns/static/style.css
+
+7.8 JSON and JSONL files
+------------------------
+No external database. Each node stores its log as JSON Lines and its metadata as
+JSON. On restart it replays the committed prefix to rebuild state. This keeps the
+demo dependency-free and makes the data inspectable by hand.
+
+Used in:
+  data/live/n1/log.jsonl, meta.json
+  data/live/n2/...
+  data/live/n3/...
+
+7.9 Python standard library
+---------------------------
+- socket and struct: DNS wire format and UDP transport.
+- threading: per-node DNS responder and quorum polling.
+- asyncio: cluster replication loop.
+- json: canonical serialization and persistence.
+- hashlib and secrets: hashes and nonces.
+- ipaddress: record policy.
+- argparse: command-line tools.
+- http.server: quorum metrics endpoint.
+
+7.10 What is deliberately NOT used
+-----------------------------------
+- No Docker: the demo must run on a plain machine.
+- No external database: no installation, no credentials, no service to fail.
+- No blockchain library: this is not a blockchain.
+- No P2P/DHT library: membership is configured, not discovered.
+- No CoreDNS/BIND dependency: the DNS wire engine is small and local.
+- No front-end framework: the portal is server-rendered.
+
+
+================================================================================
+8. IDENTITIES AND CRYPTOGRAPHY
+================================================================================
+
+8.1 Identity is a public key
+----------------------------
+There is no user table and no password. A participant is identified by an
+Ed25519 public key. To act, the participant signs the operation with the matching
+private key. The registry verifies the signature against the public key carried
+in the operation.
+
+Analogy: a wax seal. Anyone can check the seal, but only the holder of the seal
+can create it. The public key is the shape of the seal; the private key is the
+physical stamp.
+
+8.2 What is signed
+------------------
+Every operation has this envelope:
+
+  {
+    "v": 1,
+    "op": "register_domain",
+    "actor": "<public key>",
+    "nonce": "<random 32 hex chars>",
+    "ts": 1760000000,
+    "body": { ... },
+    "sig": "<base64url signature>"
+  }
+
+The signature covers a domain-separated, canonical JSON encoding of every field
+except "sig". The prefix is:
+
+  DCDNS-OP-V1\n
+
+Domain separation means a signature made for DCDNS cannot be reused in another
+protocol, and vice versa.
+
+8.3 Why canonical JSON matters
+------------------------------
+JSON objects can be written in different orders or with different whitespace.
+If the verifier re-serialized the object differently from the signer, the
+signature would fail for harmless reasons. DCDNS uses sorted keys, no spaces and
+UTF-8. The bytes signed are the bytes verified. This is also why a tampered
+field always breaks the signature.
+
+8.4 Nonce and replay
+--------------------
+Each operation gets a random 16-byte nonce (32 hex characters). When an operation
+is accepted, the state machine stores "actor|nonce" in the nonce table. A replay
+of the same signed operation is rejected with REPLAY_DETECTED, even though the
+signature is still valid. This is important: a valid signature does not mean the
+operation is fresh.
+
+8.5 Timestamp
+-------------
+The node checks that the operation timestamp is within 900 seconds of the node's
+clock. This is an ingress sanity check, not consensus time. The state machine
+itself never reads the clock, so replaying history produces the same state.
+
+8.6 The demo identities
+-----------------------
+The launcher creates six identities if they do not already exist:
+
+  Name             Role                 Meaning
+  ---------------- -------------------- --------------------------------------
+  root             root                 Campus Root Authority
+  cs-admin         department           Controller of cs.test
+  library-admin    department           Controller of library.test
+  alice            student              Member of cs.test
+  bob              student              Controls team.cs.test
+  mallory          outsider             Valid key, no authority anywhere
+
+The labels and roles are demo metadata. The registry does not trust them; it only
+uses public keys and signatures. Mallory is not "blocked by role"; she is blocked
+because her key is not the owner or controller of anything.
+
+8.7 Where keys are stored
+-------------------------
+The demo stores key pairs in identities/*.json. The portal loads them so it can
+sign on the selected identity's behalf. This is a demo convenience and a known
+limitation. In production, signing happens on the client (browser wallet, HSM or
+hardware token) and the server never sees the private key.
+
+8.8 What the root can and cannot do
+-----------------------------------
+The root can:
+  - delegate top-level namespaces such as cs.test,
+  - register names anywhere,
+  - revoke a domain,
+  - revoke a namespace,
+  - act as a controller bypass for namespace operations.
+
+The root cannot:
+  - forge an owner's signature,
+  - silently change a record without leaving a root-signed audit entry,
+  - recover a lost owner key (not implemented).
+
+Root compromise is a total compromise of delegation. That is the trust anchor.
+
+
+================================================================================
+9. NAMESPACES AND AUTHORITY
+================================================================================
+
+9.1 The namespace tree
+----------------------
+The root zone is .test. Top-level campus namespaces are delegated from it:
+
+  test
+  |
+  +-- cs.test                controller: cs-admin
+  |   |
+  |   +-- team.cs.test       controller: bob
+  |
+  +-- library.test           controller: library-admin
+
+Names can be registered inside any active namespace. The governing namespace of
+a name is the longest delegated namespace that is a suffix of it.
+
+Examples:
+  techfest.cs.test          -> cs.test
+  project.team.cs.test      -> team.cs.test
+  catalog.library.test      -> library.test
+  random.test               -> no governing namespace -> rejected
+
+This longest-match rule is what makes delegation work. A sub-namespace can set
+its own policy without the parent having to enumerate every name.
+
+9.2 Who may do what
+-------------------
+Action                         Root   Namespace controller   Member   Owner
+------------------------------ ------ ---------------------- -------- -------
+Delegate a top-level namespace  yes    no                     no       no
+Delegate a sub-namespace        yes    parent controller      no       no
+Grant a member                  yes    yes                    no       no
+Register a name                 yes    yes                    yes*     no
+Update a name's records         no     yes (in namespace)     no       yes
+Initiate a transfer             no     no                     no       yes
+Accept a transfer               no     no                     no       new owner
+Cancel a transfer               no     no                     no       current owner
+Revoke a domain                 yes    yes                    no       yes
+Revoke a namespace              yes    yes                    no       no
+Rotate a controller key         yes    yes                    no       no
+
+* A member must have can_register = true in that namespace.
+
+Important distinction:
+  - The controller manages the namespace.
+  - The owner manages the domain.
+  - A member can create names but does not automatically control the namespace.
+
+9.3 Delegation is top-down
+--------------------------
+To delegate team.cs.test, the actor must be the controller of cs.test (or root).
+You cannot delegate a namespace whose parent does not exist. This prevents
+someone from inventing a subtree out of thin air.
+
+9.4 Revocation is terminal
+--------------------------
+A revoked namespace cannot be used to register or delegate anything. A revoked
+domain cannot be updated, transferred or re-registered. The name stays in the
+registry as a tombstone so the history is preserved and nobody can take it over
+later. Revocation is a deliberate one-way door.
+
+9.5 What is decentralized here?
+-------------------------------
+Authority is not held by one central administrator for every name. The root
+delegates a subtree, and the department controller can operate inside it without
+asking the centre. The root remains the trust anchor, so this is delegated
+administration, not the abolition of all authority.
+
+Analogy: a university gives a department a filing cabinet and the authority to
+manage it. The university still exists, but it does not approve every sheet of
+paper.
+
+
+================================================================================
+10. DOMAIN LIFECYCLE AND RECORD POLICY
+================================================================================
+
+10.1 Lifecycle
+--------------
+  register_domain
+        |
+        v
+      ACTIVE  <-----------------------------+
+    /   |    \                              |
+ update |     transfer_initiate              | transfer_cancel
+        |          v                         |
+        |    PENDING_TRANSFER ---------------+
+        |          | transfer_accept
+        |          v
+        |      ACTIVE (new owner)
+        |
+   revoke_domain
+        v
+     REVOKED (terminal)
+
+- ACTIVE: normal state; DNS publishes the A record.
+- PENDING_TRANSFER: records are frozen; the name still resolves from the frozen
+  record. A handover must not cause downtime. The proposed new owner must accept.
+- REVOKED: withdrawn from DNS; history preserved; cannot be re-registered.
+
+10.2 Why records freeze during transfer
+---------------------------------------
+If the old owner could change the address while the new owner is accepting, the
+new owner could receive a name pointing somewhere unexpected. Freezing the
+record makes the handover predictable. The name stays live, but nobody can change
+it until the transfer completes or is cancelled.
+
+10.3 DNS publication rule
+-------------------------
+A name is published when:
+  - the domain is not revoked, and
+  - the governing namespace is active.
+
+That means:
+  - active domains are published,
+  - pending-transfer domains are published with their frozen records,
+  - revoked domains are not published,
+  - all domains in a revoked namespace are not published.
+
+The DNS layer never invents records. It only flattens committed state into
+name -> IPv4.
+
+10.4 Record policy
+------------------
+Only IPv4 A records are supported in v1. The address must be inside the permitted
+campus space:
+
+  10.0.0.0/8
+  172.16.0.0/12
+  192.168.0.0/16
+  127.0.0.0/8   (loopback, useful for lab demos)
+
+The address must not be multicast, unspecified or reserved. Public internet
+addresses are rejected with RECORD_NOT_ALLOWED. This is a campus policy, not a
+DNS protocol limitation. It prevents a campus name from being pointed at an
+external phishing host.
+
+10.5 Name syntax
+----------------
+- Lowercase letters, digits and hyphens.
+- Labels are 1-63 characters and cannot start or end with a hyphen.
+- The full name is at most 253 characters.
+- At least two labels.
+- The final label must be "test".
+- Wildcards, spaces and slashes are rejected.
+
+Examples accepted: techfest.cs.test, project.team.cs.test
+Examples rejected: TechFest.cs.test (uppercase is normalized), bad_name.cs.test
+(underscore), example.com (outside .test), single-label names.
+
+10.6 Revocation and DNS timing
+------------------------------
+Revocation is committed first, then the node's DNS snapshot is refreshed. A
+query after that returns NXDOMAIN. Resolvers that cached the old answer may keep
+it until the 30-second TTL expires. The evaluation measures the time until the
+authoritative/quorum answer changes, not the time until every cache in the world
+forgets it.
+
+10.7 No re-registration
+-----------------------
+A revoked name remains in the domains table. A second register_domain for the
+same name returns NAME_TAKEN. This prevents a revoked project name from being
+quietly taken over by someone else. The same applies to revoked namespaces.
+
+
+================================================================================
+11. OPERATIONS AND VALIDATION
+================================================================================
+
+11.1 The ten operations
+-----------------------
+Operation              Body fields                 Who may do it
+---------------------- --------------------------- -----------------------------
+delegate_namespace     name, controller            Root for top level; otherwise
+                                                   parent namespace controller
+grant_member           namespace, member,          Namespace controller
+                       can_register
+register_domain        name, records               Controller, root, or member
+                                                   with can_register
+update_records         name, records               Owner or namespace controller
+transfer_initiate      name, new_owner             Current owner
+transfer_accept        name                        Proposed new owner
+transfer_cancel        name                        Current owner
+revoke_domain          name, reason                Owner, namespace controller,
+                                                   or root
+revoke_namespace       name, reason                Namespace controller or root
+rotate_controller      name, new_controller        Namespace controller or root
+
+11.2 Validation order
+---------------------
+The state machine validates an operation fully before mutating anything:
+
+  1. Envelope is a JSON object with all required fields.
+  2. Protocol version is supported.
+  3. Operation name is known.
+  4. Body is an object.
+  5. Nonce is a string of at least 16 characters.
+  6. Timestamp is an integer.
+  7. Actor is a valid Ed25519 public key.
+  8. Signature is a string and verifies over the canonical bytes.
+  9. Nonce has not been used before.
+  10. The operation-specific rules pass.
+  11. Only then does state change.
+
+If any step fails, the state is untouched. This is why a rejected operation never
+consumes a log slot on any node.
+
+11.3 Main error codes
+---------------------
+MALFORMED_OPERATION       The envelope is missing fields or has wrong types.
+UNSUPPORTED_VERSION       Protocol version is not 1.
+UNKNOWN_OPERATION         Operation type is not implemented.
+INVALID_SIGNATURE         Signature does not verify against the actor key.
+REPLAY_DETECTED           The actor|nonce pair was already used.
+STALE_OPERATION           Timestamp is too far from the node clock.
+INVALID_NAME              Name syntax is invalid.
+OUTSIDE_ROOT_ZONE         Name does not end in .test.
+INVALID_RECORDS           Record set is empty or not a dotted IPv4 address.
+UNSUPPORTED_RECORD_TYPE   Record type is not A.
+RECORD_NOT_ALLOWED        Address is outside campus space or not assignable.
+INVALID_KEY               Controller/member/new owner is not a valid public key.
+NAMESPACE_TAKEN           Namespace already delegated or name already registered.
+NAMESPACE_NOT_FOUND       Namespace does not exist.
+NAMESPACE_REVOKED         Namespace is revoked.
+PARENT_NAMESPACE_NOT_FOUND Parent must be delegated first.
+NAME_TAKEN                Domain already registered or name is a namespace.
+NAME_NOT_FOUND            Domain does not exist.
+NAME_REVOKED              Domain is revoked.
+NO_NAMESPACE              Name does not fall inside any delegated namespace.
+UNAUTHORIZED              Signer lacks the required authority.
+TRANSFER_PENDING          A transfer is already in progress.
+NO_PENDING_TRANSFER       There is no transfer to accept or cancel.
+INVALID_TRANSFER          Transfer target is invalid (for example, same owner).
+NO_QUORUM                 No majority of nodes is reachable.
+NOT_LEADER                This node is not the coordinator; the client should
+                          forward or retry.
+
+11.4 HTTP status codes
+----------------------
+400  malformed input, invalid name, invalid record, replay, stale timestamp
+401  invalid signature
+403  unauthorized
+404  name/namespace not found
+409  conflict: taken, revoked, transfer pending, no pending transfer
+503  no quorum
+
+The exact error code matters more than the HTTP status for the experiments. The
+tests assert the code, not just "it failed".
+
+
+================================================================================
+12. HOW A WRITE WORKS, STEP BY STEP
+================================================================================
+
+This is the most important flow to understand. Follow one registration.
+
+Step 1: The client builds an operation
+--------------------------------------
+The portal (or a script) creates an unsigned envelope:
+
+  op = register_domain
+  actor = Alice's public key
+  body = { "name": "myproject.cs.test", "records": { "A": "10.20.5.50" } }
+  nonce = random 32 hex chars
+  ts = current Unix time
+
+Step 2: The client signs it
+---------------------------
+The private key signs:
+
+  "DCDNS-OP-V1\n" + canonical_json(envelope without sig)
+
+The signature is added as "sig". The operation is now self-contained: anyone with
+Alice's public key can verify it without contacting Alice.
+
+Step 3: The client sends it to any node
+---------------------------------------
+The portal uses the cluster client, which tries the configured node URLs. A
+script can POST directly to http://127.0.0.1:9101/op, 9102 or 9103. It does not
+matter which node receives it.
+
+Step 4: The receiving node checks the timestamp
+-----------------------------------------------
+If the timestamp is more than 900 seconds away from the node's clock, the node
+returns STALE_OPERATION. This is a coarse anti-replay/clock sanity check.
+
+Step 5: A follower forwards to the coordinator
+----------------------------------------------
+If the receiving node is not the coordinator, it returns NOT_LEADER with the
+coordinator's URL. The HTTP layer forwards the operation once, marked with
+X-DCDNS-Forwarded. A forwarded request that still finds no coordinator is
+returned to the caller rather than bouncing forever.
+
+Step 6: The coordinator validates on a clone
+--------------------------------------------
+The coordinator calls state.probe(op). This applies the operation to a deep copy
+of the state. The full authorization and record policy runs. If it fails, the
+error is returned and nothing is appended to the log. This is important: an
+invalid operation never wastes a log slot or forces followers to store garbage.
+
+Step 7: The coordinator appends and persists
+--------------------------------------------
+The operation gets the next log index. The entry is appended to the in-memory log
+and written to data/live/<node>/log.jsonl. The coordinator does not yet tell the
+client "committed".
+
+Step 8: The coordinator replicates
+----------------------------------
+The coordinator sends the entry to the other nodes via POST /internal/append.
+Followers store it and report their last index. The coordinator tracks how many
+nodes have stored each index.
+
+Step 9: Majority commit
+-----------------------
+When at least 2 of 3 nodes (including the coordinator) have stored the entry, the
+commit index advances. The state machine applies the operation for real. The
+revision increments, history and audit records are appended, and the nonce is
+recorded.
+
+Step 10: The DNS snapshot refreshes
+-----------------------------------
+Applying committed state triggers _refresh_dns_zone(). The node rebuilds a flat
+name -> IPv4 map from snapshot_for_dns() and swaps it in atomically. The DNS
+responder thread reads that map without locks.
+
+Step 11: The client gets the result
+-----------------------------------
+The response contains ok, committed, index, revision, op, target and detail. The
+portal redirects with a success message. The dashboard shows the new revision.
+
+What if the write times out?
+----------------------------
+If the entry is appended but does not reach a majority before the write timeout,
+the node raises NO_QUORUM with an "ambiguous write" message. The operation may
+still commit later. The API does not pretend it definitely failed. This is an
+honest distributed-systems behaviour.
+
+What if the client retries?
+---------------------------
+The nonce is the same if the client resends the exact same signed operation. If
+it committed, the retry gets REPLAY_DETECTED. A well-behaved client should query
+the state or use a new nonce for a genuinely new operation.
+
+Why the clone/probe step matters
+--------------------------------
+Without it, a malicious or malformed operation would be written to the log, then
+every follower would have to apply it and reject it. The log would fill with
+garbage and revisions could diverge. Probing first keeps the log clean and makes
+rejection deterministic and cheap.
+
+
+================================================================================
+13. REPLICATION AND CONSENSUS
+================================================================================
+
+13.1 What the cluster guarantees
+--------------------------------
+- Total order: all committed operations have one order.
+- Majority durability: a committed write survives the loss of any one node.
+- Convergence: a restarted or lagging follower catches up to the committed log.
+- Continued writes while one of three nodes is down.
+- Write refusal when a majority is unavailable.
+
+13.2 The protocol in plain language
+-----------------------------------
+- The nodes form a full mesh: each node knows the other two.
+- The coordinator is the lowest-id node among the reachable majority.
+- Only the coordinator appends new entries.
+- Followers never originate entries; they only store and apply what the
+  coordinator sends.
+- Because there is one writer, every node's log is a prefix of the coordinator's
+  log. Catch-up is append-only; there is no need to truncate conflicting entries.
+- A write is committed when a majority has stored it.
+- If the coordinator dies, the lowest-id node in the new reachable majority takes
+  over.
+- A new coordinator pulls any longer log from peers before writing.
+
+This is not Raft. There is no vote request/vote response protocol and no log
+truncation. The design is simpler because the workload allows a single writer and
+followers never create entries.
+
+13.3 Terms and roles
+--------------------
+- term: a leadership epoch. It increments when a node assumes leadership.
+- leader_id: the node currently believed to be coordinator.
+- role(): "leader", "follower" or "isolated".
+- isolated: the node cannot see a majority; it refuses writes.
+
+A follower that receives an append with a higher term updates its term. A stale
+coordinator's append is rejected by a follower with a higher term.
+
+13.4 How commit advances
+------------------------
+For each index, the coordinator counts how many live nodes have stored at least
+that index. If the count is at least quorum (2 of 3), the commit index advances.
+The coordinator persists meta.json and applies the newly committed entries.
+
+13.5 How catch-up works
+-----------------------
+- The coordinator tracks peer_last: the last index each peer confirmed.
+- It sends entries from peer_last + 1, up to 64 at a time.
+- A restarted follower loads its log and meta, replays the committed prefix, and
+  then receives the missing tail.
+- A new coordinator calls _adopt_longest_log(): it asks peers for their last
+  index and pulls any missing entries before it starts writing.
+
+13.6 Failure scenarios
+----------------------
+One follower down:
+  - The coordinator and the other follower still form a majority.
+  - Writes commit (2 of 3).
+  - DNS: the two live nodes answer; the quorum resolver gets 2 agreeing answers.
+
+The coordinator down:
+  - The remaining two nodes see a majority and elect the lowest-id of the two.
+  - A new term starts.
+  - Writes commit.
+  - DNS: the two live nodes answer; the resolver still gets 2 agreeing answers.
+
+The old coordinator restarts:
+  - It loads its log, catches up, and may become coordinator again because it has
+    the lowest id. This is expected, not a bug.
+
+Two nodes down:
+  - The remaining node is isolated (1 of 3 is not a majority).
+  - Writes are refused with NO_QUORUM.
+  - DNS: the single node may answer directly, but the quorum resolver requires 2
+    of 3 configured nodes, so it returns SERVFAIL.
+
+A node with a stale state:
+  - It answers DNS from what it has committed.
+  - If it is the only stale node, the other two outvote it.
+  - If two nodes are stale, the stale answer can win. Majority agreement is not
+    a freshness proof. The dashboard shows revisions so this is visible.
+
+13.7 Why is there a leader? Is that not centralization?
+-------------------------------------------------------
+This is the most common question. The answer has two parts.
+
+First, the leader is a role, not a central server:
+  - It is elected from the nodes by a deterministic rule.
+  - It has no extra signing key and no authority over content.
+  - It cannot change a record without a valid owner/controller signature.
+  - It can be killed; another node takes over.
+  - Every node can receive a client write and forward it.
+  - The cluster is a full mesh; the leader is not a hub in the topology.
+
+Second, a single writer is needed for a registry:
+  - Unique names require one order of operations.
+  - Ownership transfer and replay nonces require a single serialization point.
+  - If two nodes could accept conflicting writes, two people could both believe
+    they own the same name.
+  - A leaderless multi-writer design would need Byzantine consensus (which still
+    has a proposer/leader per view) or conflict-free data types (which cannot
+    enforce exclusive ownership cleanly).
+
+So the honest sentence is:
+
+  "The leader is a temporary write coordinator elected by a majority. It is not
+   a central authority; authority comes from signatures and delegated
+   namespaces."
+
+If you want to reduce the terminology confusion, call it "coordinator" in the
+presentation and "replica" instead of "follower". The code still uses "leader"
+internally.
+
+13.8 Known limitations of the replication layer
+-----------------------------------------------
+- Not Byzantine-fault tolerant. A malicious node could violate the protocol.
+- No vote protocol. The deterministic lowest-id rule assumes nodes converge on a
+  similar live set. Arbitrary asymmetric network partitions are not formally
+  solved; the demo tests process death, not real link failure.
+- Static membership. The peer set comes from configuration; there is no dynamic
+  add/remove.
+- No log compaction. The log grows without bound.
+- No snapshots. State is rebuilt by replay.
+- Ambiguous writes on timeout. The client may not know whether a write committed.
+- Reads from followers may lag. consistent=true forces a coordinator read.
+
+These are documented in the README, architecture notes and threat model. They are
+not hidden.
+
+13.9 Evidence that replication works
+------------------------------------
+scripts/cluster_smoke.py starts three real processes and runs nine checks:
+
+  1. registration committed by a majority,
+  2. all three nodes converge to the same revision,
+  3. a forged update is rejected,
+  4. a write commits with one follower stopped (2 of 3),
+  5. the stopped follower rejoins and catches up,
+  6. the leader is killed and a new leader takes over,
+  7. a write commits after failover,
+  8. the old leader restarts and catches up,
+  9. writes are refused when two nodes are down.
+
+Latest result: 9/9 cluster checks passed.
+
+
+================================================================================
+14. DNS: THE DECENTRALIZED PART
+================================================================================
+
+This is the heart of the project and the part most likely to be questioned.
+
+14.1 The old design versus the new design
+-----------------------------------------
+Old design (Level 2):
+  registry nodes -> one publisher polls committed state -> one DNS front-end
+  -> clients.
+
+That decentralizes registry authority but leaves DNS trust in one process. If
+that process lies or dies, clients are affected.
+
+New design (Level 3):
+  every registry node has its own DNS responder,
+  and a client-facing resolver asks all nodes and requires a majority.
+
+There is no DNS publisher. There is no single DNS server that owns the zone.
+
+14.2 Per-node DNS responder
+---------------------------
+Each node runs a NodeDNSResponder thread:
+
+  - binds UDP on its own port (5354, 5355 or 5356),
+  - reads the node's committed dns_zone snapshot,
+  - answers A and ANY queries,
+  - returns NXDOMAIN for unknown names,
+  - returns NOTIMP for unsupported types,
+  - sets the AA (authoritative answer) bit,
+  - uses a 30-second TTL,
+  - records query metrics.
+
+The responder does not read the registry database directly. It reads the flat
+snapshot that was built from committed state. A follower may be a fraction of a
+second behind the coordinator; that is visible in its revision.
+
+14.3 The client-facing quorum resolver
+--------------------------------------
+The QuorumResolver process on UDP 5353:
+
+  - receives a DNS query from a client,
+  - forwards the same query to all three node responders,
+  - waits up to 0.75 seconds per node (configurable),
+  - reduces each response to its semantic content,
+  - groups identical answers,
+  - returns an answer only if at least 2 of 3 nodes agree,
+  - otherwise returns SERVFAIL with the original question.
+
+It is a majority-vote forwarder, not an authority. It has no zone of its own and
+no private keys. It cannot create a record. It only compares what the nodes say.
+
+14.4 What "semantic agreement" means
+------------------------------------
+The resolver does not compare raw packets. It compares what a client would act
+on:
+
+  - the RCODE (NOERROR, NXDOMAIN, etc.),
+  - the answer records: type, class and RDATA,
+  - with records sorted so order does not matter.
+
+It deliberately ignores:
+  - the transaction ID (the resolver patches the client's ID back in),
+  - harmless flags,
+  - TTL differences,
+  - record order.
+
+So two nodes agree if they return the same address for the same name, even if
+their packets differ in cosmetic ways.
+
+14.5 Decision table
+-------------------
+Situation                          Resolver behaviour
+---------------------------------- --------------------------------------------
+All 3 nodes return the same answer  Return it (3 votes).
+2 nodes agree, 1 is down            Return the majority answer (2 votes).
+2 nodes agree, 1 returns a forgery  Return the majority answer; count a
+                                    disagreement; the liar is outvoted.
+2 nodes agree on NXDOMAIN           Return NXDOMAIN.
+1 node answers, 2 are down          SERVFAIL. One node cannot speak for the
+                                    cluster.
+3 nodes return 3 different answers  SERVFAIL. No majority.
+2 nodes return different answers    SERVFAIL. No majority.
+A node returns a malformed packet   It does not count as a vote; if the other
+                                    two agree, return their answer.
+Two nodes collude on a forgery      The resolver accepts it. This is the
+                                    documented majority trust boundary.
+
+14.6 Why not just query one node?
+---------------------------------
+Because one node can be:
+  - down,
+  - stale,
+  - compromised,
+  - configured with a different state.
+
+A single node is a single point of trust. Requiring two independent nodes to
+agree removes that single point for one-fault scenarios. It is the DNS analogue
+of quorum commit.
+
+14.7 Why 2 of 3 and not 3 of 3?
+-------------------------------
+2 of 3 tolerates one failure or one liar while still making progress. 3 of 3
+would stop on any single fault, which defeats the resilience goal. 1 of 3 would
+let one node decide, which defeats the trust goal. 2 of 3 is the smallest useful
+majority.
+
+14.8 Is the quorum resolver a single point of failure?
+------------------------------------------------------
+It is a single process in the demo, but it is not a single point of authority:
+
+  - It has no zone and no keys; it cannot invent an answer.
+  - A client can query any node directly.
+  - You can run multiple resolvers; they will all compare the same nodes.
+  - If the resolver dies, clients pointed at it fail, but no registry data is
+    lost and the authoritative nodes keep serving.
+
+In a production design, the resolver function would be replicated or built into
+clients/stub resolvers. The important property is that the decision rule is
+majority agreement, not the identity of one process.
+
+14.9 What is still centralized?
+-------------------------------
+Be honest about this:
+
+  - The set of nodes is configured. There is no P2P/DHT discovery.
+  - The root trust anchor is centralized by design.
+  - The .test zone is a lab; it is not delegated from the real DNS root.
+  - The demo portal holds private keys.
+  - The quorum threshold is a configuration choice.
+  - DNSSEC is not implemented, so DNS answers are not cryptographically signed.
+
+What is decentralized:
+  - registry state is replicated across independent nodes,
+  - namespace administration is delegated,
+  - every node serves DNS,
+  - the client answer is decided by majority agreement, not by one server.
+
+14.10 How to query it
+---------------------
+On Windows, nslookup does not support a custom port. Use the project's client:
+
+  python -m dcdns.dig techfest.cs.test
+  python -m dcdns.dig techfest.cs.test --all
+  python -m dcdns.dig techfest.cs.test --port 5354
+
+On Linux/macOS with dig:
+
+  dig @127.0.0.1 -p 5353 techfest.cs.test A
+  dig @127.0.0.1 -p 5354 techfest.cs.test A
+
+The --all output shows the quorum answer and each node's answer side by side.
+That is the clearest way to demonstrate the majority rule.
+
+14.11 Metrics and what they mean
+--------------------------------
+http://127.0.0.1:5380/metrics returns JSON:
+
+  published_revision   The lowest revision among reachable nodes. This is a
+                       conservative "everyone has at least this" number. It is
+                       not a publisher revision anymore, despite the name.
+  zone_size            The largest zone reported by a reachable node.
+  source               "majority of 2 of 3 nodes".
+  queries              Queries received by the resolver.
+  answered             Queries that got a majority answer.
+  nxdomain             Majority answers that were NXDOMAIN.
+  servfail             Queries with no majority (SERVFAIL returned).
+  disagreements        Queries where the nodes did not all agree (even if a
+                       majority still answered).
+  quorum               Required votes (2).
+  nodes                Per-node reachability, revision, zone size, overrides.
+  recent               Last queries with per-node votes and the winner.
+
+A disagreement is not necessarily a failure. It means the nodes did not speak
+with one voice; the majority answer may still be correct. A SERVFAIL means no
+majority was reached.
+
+14.12 The lying-node demo
+-------------------------
+The demo enables a loopback-only chaos endpoint on each node. It can override one
+name's answer in memory:
+
+  POST http://127.0.0.1:9103/internal/chaos
+  { "name": "techfest.cs.test", "address": "10.20.5.66" }
+
+Now n3 lies. The quorum resolver still returns the honest answer from n1 and n2.
+Directly querying n3 returns the forgery. Clear it with:
+
+  POST http://127.0.0.1:9103/internal/chaos
+  { "clear": true }
+
+The portal experiment "Majority DNS resists a lying node" does this
+automatically and clears the override in a finally block. The override is
+in-memory only; restarting the node clears it. Chaos is disabled unless the node
+is started with --chaos, and the endpoint is loopback-only. It is a demo feature,
+not a production feature.
+
+14.13 What DNSSEC would add
+---------------------------
+The registry signatures secure operations, not DNS answers. A client querying a
+node directly does not verify a cryptographic signature on the DNS response. The
+quorum resolver provides majority agreement, not cryptographic proof.
+
+DNSSEC would sign the zone data so a resolver could verify the answer
+cryptographically. It is not implemented. In a production system, signed zone
+snapshots or DNSSEC would reduce reliance on majority trust. This is a clear
+future-work item and a good answer to "how do you know a node did not lie?":
+"One node is outvoted by majority; for cryptographic proof we would add DNSSEC."
+
+
+================================================================================
+15. SECURITY MODEL AND THREAT MODEL
+================================================================================
+
+15.1 Assets
+-----------
+- Namespace delegation records: whoever controls a namespace controls every name
+  inside it.
+- Domain ownership records: determines who may change where a name points.
+- Record contents (A): redirects traffic for a campus name.
+- Audit log: evidence of who changed what and when.
+- Private keys: possession is identity.
+- DNS answers: what users and applications act on.
+
+15.2 Adversaries considered
+---------------------------
+- Unaffiliated network user: can call the API, submit signed operations, read
+  public state.
+- Malicious student: has a valid key but no authority over the target namespace.
+- Compromised department key: can act fully inside that department's subtree.
+- Network attacker: can drop, delay or reorder packets.
+- Node operator (honest-but-curious): can read local state and logs.
+- Crashed node: stops responding; may restart with stale state.
+- Lying DNS node: returns a wrong answer while still participating (handled at
+  the DNS read layer by majority agreement, not by registry consensus).
+
+Out of scope for the registry consensus: a node that actively lies while
+participating in consensus (Byzantine), a compromised root key, and physical
+access to the host.
+
+15.3 Threats and mitigations
+----------------------------
+Impersonation
+  Attack: submit an operation claiming to be someone else.
+  Mitigation: the actor is inside the signed bytes; changing it breaks the
+  signature. Every node verifies, not just the entry point.
+  Residual: private-key compromise.
+
+Tampering in flight
+  Attack: change the record value after signing.
+  Mitigation: canonical serialization over the full envelope; any change breaks
+  verification. There is no unsigned field that affects state.
+  Test: invalid signature experiment.
+
+Replay
+  Attack: resubmit a previously accepted operation.
+  Mitigation: nonce recorded per actor; replay rejected deterministically.
+  Residual: the nonce table grows with operation count.
+  Test: replay experiment.
+
+Cross-namespace modification
+  Attack: a department modifies another department's names.
+  Mitigation: authorization uses the longest enclosing namespace; the signer
+  must be that namespace's controller or a granted member. Every node applies
+  the same rule to the same state.
+  Test: cross-namespace experiment.
+
+Duplicate registration / race
+  Attack: two participants register the same name concurrently.
+  Mitigation: the coordinator serializes operations; the state machine rejects
+  the second with NAME_TAKEN. Majority commit means there is no window where
+  both callers see success.
+  Test: duplicate registration experiment.
+
+Record hijack via a prohibited destination
+  Attack: point a campus name at an external host for phishing or exfiltration.
+  Mitigation: record policy rejects addresses outside campus space at the state
+  machine level.
+  Test: prohibited destination experiment.
+
+Unauthorized revocation or transfer
+  Attack: revoke or steal someone else's name.
+  Mitigation: revocation requires owner, namespace controller or root; transfer
+  requires the owner to initiate and the recipient to accept, with records frozen
+  in between.
+  Test: ownership transfer experiment, state tests.
+
+Reaching a single node to bypass policy
+  Attack: send a write directly to a follower.
+  Mitigation: followers forward to the coordinator and never apply uncommitted
+  entries. Policy is evaluated by the state machine on every node.
+  Test: cluster smoke phase 2.
+
+Node failure
+  Attack/fault: crash a node or partition it.
+  Mitigation: majority commit; continued writes with one of three down; refusal
+  without a majority; append-only catch-up on rejoin.
+  Test: cluster smoke phases 3-6.
+
+Silent history editing
+  Attack: alter or delete an audit record on one node.
+  Mitigation: hash chain; verification reports the first broken record. Nodes
+  that diverge are detectable by comparing revisions and chain heads.
+  Residual: a malicious majority could rewrite the whole chain; there is no
+  external timestamp/anchor.
+  Test: audit chain tampering test.
+
+Stale DNS data after revocation
+  Attack/fault: a revoked name keeps resolving.
+  Mitigation: DNS snapshots include only non-revoked domains in active
+  namespaces. Withdrawal is observed after commit plus the polling/refresh time.
+  Residual: resolver caches may serve the old answer until the 30-second TTL.
+  This is inherent to DNS, not a defect, and is measured.
+  Test: revocation experiment.
+
+Lying DNS node
+  Attack: one node returns a forged A record.
+  Mitigation: the quorum resolver compares all three answers and requires two to
+  agree. One liar is outvoted.
+  Residual: two colluding nodes can lie; DNSSEC is not implemented.
+  Test: quorum_dns experiment.
+
+15.4 Trust boundaries
+---------------------
+  untrusted                     trust boundary                  trusted
+  ---------                     --------------                  -------
+  any client  --signed op-->  [ verify signature ]  -->  state machine
+  any client  --signed op-->  [ namespace policy ]  -->  state machine
+  follower    --append RPC->  [ term / log rules ]  -->  replicated log
+  DNS client  --query------>  [ 2-of-3 agreement ]  -->  answer or SERVFAIL
+
+The registry never trusts the transport. A node that receives an operation
+verifies it itself; it does not rely on the forwarding node having done so.
+
+15.5 Residual risk register
+---------------------------
+Root key compromise          Critical  Accepted; 2-of-3 root signatures specified,
+                                       not built.
+Unauthenticated internal RPC High      /internal/* is loopback-only in the demo;
+                                       production needs mutual TLS.
+Owner key loss               High      No recovery; break-glass policy specified,
+                                       not built.
+Byzantine registry node      High      Out of scope; explicitly not claimed.
+Two colluding DNS nodes      High      Majority trust boundary; DNSSEC not built.
+Portal holds private keys    High      Demo-only; documented in the UI.
+Nonce table grows            Low       Acceptable at prototype scale.
+Log never compacted          Low       Acceptable at prototype scale.
+.test only                   Low       Deliberate isolation.
+DNS cache holds revoked TTL  Low       Measured, inherent to DNS.
+No external audit anchor     Medium    Hash chain detects edits but not a full
+                                       rewrite by a malicious majority.
+
+15.6 What we deliberately do not claim
+--------------------------------------
+- That the system eliminates central authority. The root authority remains.
+- That it resists a malicious registry node in consensus.
+- That two colluding DNS nodes cannot lie.
+- That it is a production PKI. Key enrolment and recovery are specified, not
+  implemented.
+- That every client on the internet can resolve these names. Only clients pointed
+  at the lab resolver can.
+- That DNS answers are cryptographically signed. DNSSEC is future work.
+
+
+================================================================================
+16. AUDIT AND HISTORY
+================================================================================
+
+16.1 Two views
+--------------
+- history: a per-target list of operations (used on the domain detail page).
+- audit: a global, hash-chained list of every accepted operation.
+
+16.2 The audit record
+---------------------
+  {
+    "seq": 12,
+    "revision": 12,
+    "op": "update_records",
+    "target": "techfest.cs.test",
+    "actor": "<public key>",
+    "detail": { "before": {...}, "after": {...} },
+    "prev_hash": "<hash of record 11>",
+    "hash": "sha256(canonical_json(record without hash))"
+  }
+
+16.3 Verification
+-----------------
+verify_audit_chain() recomputes every hash and checks every prev_hash. It returns
+ok, length, head, or the first broken record. Changing any historical record
+invalidates every hash after it. The Audit page shows the verification badge.
+
+16.4 What the chain does and does not prove
+------------------------------------------
+It proves that a record was not edited in isolation without breaking the chain.
+It does not prove that a malicious majority did not rewrite the entire chain. For
+that you need an external anchor (a timestamp, a published head, or a separate
+witness). This is a documented limitation.
+
+16.5 Why history matters for the demo
+-------------------------------------
+When you update a record, the domain page shows before/after. When you transfer
+or revoke, the history shows who did it and at which revision. This is what makes
+the registry auditable rather than just a key-value store.
+
+
+================================================================================
+17. THE PORTAL AND USER INTERFACE
+================================================================================
+
+17.1 Pages
+----------
+/                       Dashboard: nodes, cluster, DNS, per-node authorities,
+                        recent queries, recent operations.
+/domains                Domain list, search, register form.
+/domains/{name}         Domain detail: record, owner, namespace, actions,
+                        history, DNS view.
+/namespaces             Namespace tree, delegate form, grant member form.
+/audit                  Global audit trail and hash-chain verification.
+/experiments            Run the live security experiments.
+/identities             Demo identities, keys, fingerprints, roles.
+/health                 Portal health check (used by the launcher).
+/partials/status        HTML fragment polled by the dashboard.
+/static/*               CSS and JavaScript.
+
+17.2 What the dashboard shows
+-----------------------------
+- Three node cards: role, revision, commit index, term, quorum, DNS port, DNS
+  revision, zone size, query count, and a "forged answer" badge if chaos is on.
+- Cluster panel: reachable nodes, committed revision, domain/namespace counts,
+  coordinator URL, audit chain badge.
+- Decentralized DNS panel: required votes, lowest node revision, live A records,
+  queries, SERVFAIL/NXDOMAIN/disagreement counts, decision rule.
+- Per-node DNS authorities table: endpoint, reachability, revision, zone size,
+  honest/forged.
+- Recent DNS queries: name, per-node votes, majority answer, agreement badge,
+  RCODE, age.
+- Recent accepted operations.
+
+17.3 How the portal signs
+-------------------------
+The portal loads the demo key files and signs on behalf of the selected identity.
+The identity picker sets a cookie. This is a demo convenience. In production the
+private key never leaves the user's device.
+
+17.4 Live updates
+-----------------
+app.js polls /partials/status and replaces the live section. The page still works
+without JavaScript; the polling is progressive enhancement. Forms are normal POST
+requests with redirects and flash messages.
+
+17.5 Experiments page
+---------------------
+The page lists all experiments with title, description and expectation. Running
+one calls the same ExperimentRunner used by scripts/evaluate.py. Results are kept
+in memory for the session; restarting the portal clears them. The CLI writes the
+markdown report.
+
+17.6 Why server-rendered?
+------------------------
+The demo must work offline and on any machine. No bundler, no npm, no CDN. A
+registry administration tool benefits from explicit form submissions and clear
+confirmation, not optimistic UI.
+
+
+================================================================================
+18. RUNNING THE DEMO
+================================================================================
+
+18.1 Prerequisites
+------------------
+- Python 3.11 (the project was developed on Windows with Python 3.11).
+- pip.
+- No Docker, no database, no external services.
+
+18.2 Install and start
+----------------------
+  cd C:\Users\hkpan\DCDNS
+  pip install -r requirements.txt
+  python run_demo.py --fresh
+
+Wait for the READY banner. It prints the portal, DNS, node DNS, metrics and node
+API addresses.
+
+18.3 What the launcher starts
+-----------------------------
+- Creates or reuses demo identities in identities/.
+- Deletes data/live if --fresh.
+- Starts n1, n2, n3 on 9101-9103.
+- Gives each node a DNS port: 5354, 5355, 5356.
+- Enables --chaos on the nodes (unless --no-dns).
+- Waits for a coordinator.
+- Seeds the campus registry.
+- Starts the quorum resolver on 5353 and metrics on 5380.
+- Starts the portal on 8000.
+- Supervises children and restarts them if they die (unless --no-supervisor).
+
+18.4 Launcher flags
+-------------------
+--fresh           Delete data/live and start clean. Identities are reused.
+--no-portal       Do not start the portal.
+--no-dns          Do not start DNS responders or the quorum resolver.
+--no-supervisor   Do not restart crashed children; useful for failure demos.
+
+18.5 Seed data
+--------------
+Namespaces:
+  cs.test          controller cs-admin
+  library.test     controller library-admin
+  team.cs.test     controller bob (sub-namespace of cs.test)
+
+Members:
+  alice            can_register in cs.test
+
+Domains:
+  techfest.cs.test          Alice    10.20.5.42
+  robotics.cs.test          Alice    10.20.5.43
+  project.team.cs.test      Bob      10.20.5.77
+  catalog.library.test      library-admin 10.20.6.10
+
+The seed is idempotent for namespaces and domains: existing ones are skipped. The
+grant_member call is submitted on each start, so the revision may increase by one
+on a restart. That is harmless.
+
+18.6 Verify it is alive
+-----------------------
+  python -m pytest tests/ -q
+  python -m dcdns.dig techfest.cs.test --all
+  curl http://127.0.0.1:5380/metrics
+  curl http://127.0.0.1:8000/health
+
+Expected dig output: quorum, n1, n2 and n3 all return 10.20.5.42 (NOERROR).
+
+18.7 Five-minute demo path
+--------------------------
+1. Dashboard (45 s)
+   Open http://127.0.0.1:8000. Point out three nodes, one coordinator, same
+   revision, quorum available, audit chain verified, and the decentralized DNS
+   panel with three per-node authorities.
+
+2. Register a name (60 s)
+   Go to Domains, acting as Alice. Register myproject.cs.test at 10.20.5.50.
+   Then run:
+     python -m dcdns.dig myproject.cs.test --all
+   All three nodes and the quorum resolver should return 10.20.5.50.
+
+3. Update and observe (45 s)
+   Open the domain, change the address to 10.20.5.51, submit, query again.
+   The new answer appears in a fraction of a second. The dashboard shows the
+   revision and recent queries.
+
+4. Attack it (60 s)
+   Switch to Mallory. Try to update Alice's name. It is rejected with
+   UNAUTHORIZED and the record is unchanged. Optionally try to register inside
+   library.test as Mallory, or delegate a namespace she does not control.
+
+5. Lying node (60 s)
+   Run the experiment "Majority DNS resists a lying node". It makes n3 return
+   10.20.5.66, queries the quorum resolver, and shows the honest answer. It also
+   queries n3 directly to prove the forgery exists. It clears the override.
+   Or do it manually (see 18.8).
+
+6. Revocation (30 s)
+   As Alice, revoke myproject.cs.test. Query again: NXDOMAIN. The name cannot be
+   re-registered. The history is preserved.
+
+7. Audit (30 s)
+   Open Audit. Show the hash chain and the verification badge. Explain that
+   editing an old record breaks every later hash.
+
+18.8 Manual lying-node demo
+---------------------------
+Make n3 lie:
+
+  python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/chaos', json={'name':'techfest.cs.test','address':'10.20.5.66'}, timeout=3).json())"
+
+Query all:
+
+  python -m dcdns.dig techfest.cs.test --all
+
+Expected:
+  quorum  NOERROR  10.20.5.42   (or the current honest address)
+  n1      NOERROR  10.20.5.42
+  n2      NOERROR  10.20.5.42
+  n3      NOERROR  10.20.5.66   (the lie)
+
+Clear it:
+
+  python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/chaos', json={'clear':True}, timeout=3).json())"
+
+18.9 Failure demo
+-----------------
+For a clean scripted failure demo, stop the live demo and run:
+
+  python scripts/cluster_smoke.py
+
+It starts its own three nodes on 9101-9103 with data/smoke and runs the nine
+checks. It cannot run while the live demo is using those ports.
+
+For a live failure demo, start with --no-supervisor so the launcher does not
+restart killed nodes. Then kill the process for the coordinator (find the PID with
+Get-CimInstance Win32_Process or Task Manager). The remaining two nodes elect a
+new coordinator and continue. Kill a second node: writes stop and the quorum
+resolver returns SERVFAIL. Restart the nodes or rerun --fresh.
+
+18.10 Stop
+----------
+Press Ctrl+C in the launcher terminal. It terminates all children. If a process
+is stuck, stop the python processes whose command line mentions dcdns.node,
+dcdns.portal, dcdns.quorum_resolver or run_demo.
+
+18.11 Windows note about nslookup
+---------------------------------
+Windows nslookup does not support a custom port (the -port option is a BIND
+nslookup feature). Use python -m dcdns.dig. On Linux/macOS, dig @127.0.0.1 -p
+5353 name works. This is a client-tool limitation, not a DNS server limitation.
+
+18.12 Test commands and when to run them
+----------------------------------------
+  python -m pytest tests/ -q          Always safe; no live cluster needed.
+  python scripts/portal_flow.py       Requires the live demo (portal + DNS).
+  python scripts/evaluate.py          Requires the live demo (nodes + DNS).
+  python scripts/cluster_smoke.py     Requires the live demo to be stopped.
+
+Latest results:
+  54/54 tests
+  9/9 cluster checks
+  14/14 portal flow checks
+  11/11 live experiments
+
+
+================================================================================
+19. EVIDENCE: WHAT HAS BEEN PROVEN
+================================================================================
+
+19.1 Unit and wire tests: 54/54
+-------------------------------
+- 33 state-machine and authorization tests.
+- 10 DNS wire-format tests.
+- 11 quorum-resolver and per-node responder tests.
+
+They cover:
+  - signature verification and tampering,
+  - replay rejection,
+  - namespace delegation and longest-match authority,
+  - cross-namespace rejection,
+  - duplicate names,
+  - record policy,
+  - transfer flow and frozen records,
+  - revocation and DNS snapshot withdrawal,
+  - namespace revocation,
+  - audit chain tampering,
+  - DNS name parsing and response encoding,
+  - NXDOMAIN, NOTIMP, A/ANY,
+  - majority agreement, split votes, malformed votes,
+  - SERVFAIL synthesis,
+  - lying-node outvoting,
+  - per-node responder overrides.
+
+19.2 Cluster integration: 9/9
+-----------------------------
+Real processes, real kills, real recovery:
+  - majority commit,
+  - convergence,
+  - forged write rejection,
+  - follower loss and catch-up,
+  - coordinator failover,
+  - old coordinator catch-up,
+  - quorum loss refusal.
+
+19.3 Portal flow: 14/14
+-----------------------
+Drives the actual HTTP forms:
+  - dashboard renders,
+  - register a name,
+  - domain page renders,
+  - new name resolves in DNS,
+  - record update accepted,
+  - updated address propagates,
+  - transfer initiated,
+  - domain pending transfer,
+  - records frozen during transfer,
+  - recipient accepts,
+  - ownership moves to Bob,
+  - previous owner cannot revoke after transfer,
+  - new owner revokes,
+  - revoked name withdrawn from DNS.
+
+19.4 Live experiments: 11/11
+----------------------------
+1. Duplicate registration -> NAME_TAKEN.
+2. Forged record update -> UNAUTHORIZED, record unchanged.
+3. Cross-namespace write -> UNAUTHORIZED.
+4. Unauthorized delegation -> UNAUTHORIZED.
+5. Tampered signature -> INVALID_SIGNATURE.
+6. Replay -> REPLAY_DETECTED.
+7. Prohibited destination -> RECORD_NOT_ALLOWED.
+8. Two-party ownership transfer -> pending then accepted.
+9. Revocation -> withdrawn from DNS.
+10. DNS propagation -> new answer live quickly.
+11. Majority DNS resists a lying node -> quorum honest, n3 forged.
+
+19.5 Latest measured values
+---------------------------
+From the last live run (these vary with machine load):
+  - DNS propagation: about 0.11 s after the client response.
+  - Revocation withdrawal: about 0.31 s.
+  - Commit latency: about 266 ms.
+  - Quorum DNS: n3 returned 10.20.5.66, quorum returned 10.20.5.123.
+
+Do not present these as universal benchmarks. They are observations on one
+laptop with three processes. The point is the mechanism, not the exact number.
+
+19.6 Why the failure tests matter more than the happy path
+----------------------------------------------------------
+A registry that works when everyone is honest demonstrates nothing. The evidence
+that carries weight is:
+  - the same forged operation is rejected whether sent to the coordinator or a
+    follower,
+  - a write is refused when a majority is unavailable,
+  - a node that missed entries converges to exactly the committed revision,
+  - one lying DNS node cannot change the majority answer.
+
+19.7 Threats to validity
+------------------------
+- Single host: no true network partition. Process termination is used instead.
+- Three nodes only: cannot distinguish 2-of-3 from larger quorums; the code
+  computes quorum from configuration, not hard-coded.
+- Demo keys on disk: portal signing is not realistic.
+- Experiments mutate state: unique suffixes keep results stable.
+- Timing on a laptop: latency varies with load; report observations, not
+  benchmarks.
+- No Byzantine registry consensus: a malicious node is out of scope.
+- No DNSSEC: DNS answers are not cryptographically signed.
+
+
+================================================================================
+20. LIMITATIONS AND HONEST CLAIMS
+================================================================================
+
+This section is your defence against overclaiming. Say these before someone else
+does.
+
+20.1 Centralization that remains
+--------------------------------
+- Root trust anchor: the root key authorizes top-level namespaces.
+- Static membership: the three node URLs are configured, not discovered.
+- .test only: the prototype is not delegated from the real DNS root.
+- Portal key custody: the demo server holds private keys.
+- Quorum threshold: 2 of 3 is a configuration choice, not a universal law.
+- No DNSSEC: DNS answers rely on majority trust, not cryptographic proofs.
+
+20.2 Technical limitations
+--------------------------
+- No Byzantine-fault-tolerant consensus. A malicious node can violate the
+  replication protocol. The DNS majority can outvote one liar, but that is not
+  BFT consensus.
+- Two colluding DNS nodes can lie. Majority trust is the boundary.
+- No real network partition testing. Process death is not the same as a split
+  network.
+- No dynamic membership. Adding a node requires config changes.
+- No log compaction or snapshots. The log grows without bound.
+- No key recovery. A lost owner key means a lost domain.
+- Only IPv4 A records. No AAAA, TXT, CNAME, MX, SRV, DNSSEC or zone transfers.
+- No recursion. The quorum resolver is a forwarder, not a general recursive
+  resolver.
+- No rate limiting or DoS protection.
+- No privacy layer. Registry state and audit are public inside the lab.
+- No production key management. No HSM, no client-side signing, no enrolment.
+
+20.3 The one-paragraph honest summary
+-------------------------------------
+DCDNS is a permissioned prototype. It decentralizes namespace administration,
+state replication, DNS serving and the DNS answer decision. It does not
+decentralize the root trust anchor, node membership or key custody. It tolerates
+crash faults and one lying DNS node, not Byzantine consensus or two colluding
+nodes. It is authoritative for .test only, supports A records only, and has no
+DNSSEC. Those boundaries are deliberate and documented, because a prototype that
+claims more than it demonstrates is worse than one that is precise.
+
+20.4 What would production require?
+-----------------------------------
+- Replace the custom log with etcd/Raft or a proven BFT protocol if malicious
+  nodes are in scope.
+- Mutual TLS between nodes; internal APIs not on loopback only.
+- Client-side signing with hardware-backed keys; no private keys on the portal.
+- Dynamic membership and log compaction/snapshots.
+- DNSSEC or signed zone snapshots.
+- Integration with the university's real delegated zone and DNS/DHCP.
+- Monitoring, rate limiting, backups, disaster recovery.
+- External audit anchoring or a witness for the hash chain.
+- Multi-site deployment and real partition testing.
+
+
+================================================================================
+21. PRESENTATION Q&A: TYPICAL QUESTIONS AND STRONG ANSWERS
+================================================================================
+
+Use these as speaking notes, not as a script to read word for word. The best
+answers are short, then one supporting detail, then an honest limitation.
+
+Q1. What is DCDNS in one sentence?
+A: "It is a permissioned campus DNS registry where departments own their part of
+   the namespace, three nodes replicate the state, every node serves DNS, and a
+   client resolver accepts an answer only when a majority agrees."
+
+Q2. What problem does it solve?
+A: "It lets a university delegate DNS administration without giving up a coherent
+   namespace or an audit trail. Departments can manage their own names, but every
+   change is signed, authorized, replicated and revocable."
+
+Q3. Why not just use a database and a DNS server?
+A: "A database solves storage, not authority. The hard part is who may delegate a
+   namespace, who owns a name, how a transfer works, how a revocation is proven,
+   and how every node reaches the same verdict. That logic is the state machine.
+   And a single database plus a single DNS server is still two central points of
+   failure. We replicate the registry and serve DNS from every node."
+
+Q4. Is this a blockchain?
+A: "No. There are no blocks, mining, tokens or proof-of-work. It is a permissioned
+   registry with a replicated log and a known set of nodes. A blockchain is
+   designed for trustless open membership; this is designed for a university that
+   already knows its departments."
+
+Q5. Is it truly decentralized?
+A: "It is decentralized in four specific ways: namespace authority is delegated,
+   state is replicated across independent nodes, every node serves DNS, and the
+   client answer is decided by majority agreement. It is not decentralized in
+   membership discovery, root trust, or key custody. We are precise about that."
+
+Q6. What exactly is decentralized?
+A: "Authority: the root delegates subtrees to departments. Data: three nodes hold
+   the log. DNS serving: each node has its own responder. DNS decision: the
+   resolver requires 2 of 3 agreement. What is not decentralized: the root trust
+   anchor, the configured node set, and the demo portal's key custody."
+
+Q7. What is still centralized?
+A: "The root trust anchor, the static node membership, the .test lab zone, the
+   demo key files, and the quorum threshold. Those are deliberate prototype
+   choices, documented in the README and threat model."
+
+Q8. Why three nodes?
+A: "Three is the smallest useful majority. One node down: 2 of 3 still commit and
+   still answer DNS. Two down: no majority, so writes stop and DNS returns
+   SERVFAIL. One liar: the other two outvote it. Two liars: they can outvote the
+   honest node, which is the documented boundary."
+
+Q9. What is a quorum?
+A: "A majority: floor(N/2) + 1. For three nodes, two. The registry needs a quorum
+   to commit a write. The DNS resolver needs a quorum of agreeing answers. Same
+   number, different planes."
+
+Q10. Why is there a leader? Isn't that centralization?
+A: "The leader is a temporary write coordinator, not a central authority. It is
+   elected as the lowest-id node among the reachable majority, it has no extra
+   signing key, it cannot change a record without a valid signature, and it can be
+   killed and replaced. A single writer is needed to order unique-name and
+   ownership operations. The cluster is a full mesh; the leader is a role, not a
+   hub. In the presentation I usually call it the coordinator."
+
+Q11. What happens if the leader dies?
+A: "The remaining two nodes see a majority and elect the lowest-id of the two.
+   A new term starts, the new coordinator catches up on the log, and writes
+   continue. The smoke test kills the leader and proves this. DNS is unaffected
+   because every node already answers independently."
+
+Q12. What happens if one node lies?
+A: "For DNS, the other two outvote it; the resolver returns the honest majority
+   answer. For registry consensus, a lying node is out of scope: this is not
+   Byzantine-fault-tolerant consensus. We demonstrate the DNS case with the chaos
+   endpoint: n3 returns 10.20.5.66, the resolver returns the honest address."
+
+Q13. What if two nodes lie?
+A: "Then they are the majority and the resolver accepts their answer. That is the
+   honest boundary of majority trust. DNSSEC or signed zone snapshots would be
+   needed for cryptographic proof, and we have not implemented that. We say so
+   rather than claiming Byzantine tolerance."
+
+Q14. What if two nodes are down?
+A: "The remaining node is isolated: it cannot commit writes and returns NO_QUORUM.
+   The DNS resolver requires 2 of 3 configured nodes, so it returns SERVFAIL even
+   if the single node answers. This is deliberate: we prefer no answer to trusting
+   one node."
+
+Q15. How does the DNS resolver choose an answer?
+A: "It sends the same query to all three node responders, reduces each response to
+   its semantic content (RCODE plus answer records), groups identical answers, and
+   returns one only if at least two nodes are in the same group. Otherwise it
+   returns SERVFAIL. It ignores transaction IDs, harmless flags, TTL differences
+   and record order."
+
+Q16. Is the resolver a single point of failure?
+A: "It is a single process in the demo, but not a single point of authority. It
+   has no zone and no keys; it cannot invent an answer. Clients can query any node
+   directly, and you can run multiple resolvers. If it dies, clients pointed at it
+   fail, but no registry data is lost. In production the resolver function would
+   be replicated or built into clients."
+
+Q17. How do you stop someone registering someone else's name?
+A: "The signer must be authorized in the governing namespace: the controller, the
+   root, or a member with can_register. Mallory has a valid key but no authority,
+   so her registration is rejected with UNAUTHORIZED. The check runs on every
+   node, not just the entry point."
+
+Q18. How do you stop replay?
+A: "Each operation has a random nonce. The state machine records actor|nonce when
+   it accepts an operation. A byte-for-byte resubmission is rejected with
+   REPLAY_DETECTED even though the signature is still valid."
+
+Q19. How are private keys handled?
+A: "In the demo, the portal loads key files from identities/ and signs on the
+   selected identity's behalf. That is a convenience and a limitation. In
+   production, signing happens on the client with a hardware-backed key and the
+   server never sees the private key."
+
+Q20. What happens when a domain is revoked?
+A: "The domain becomes REVOKED, the DNS snapshot excludes it, and queries return
+   NXDOMAIN after the commit propagates. The history and audit remain. The name
+   cannot be re-registered, which prevents a revoked project name from being
+   quietly taken over."
+
+Q21. What happens during an ownership transfer?
+A: "The owner initiates; the domain becomes PENDING_TRANSFER and records are
+   frozen. The proposed new owner must accept. Until then the name keeps resolving
+   from the frozen record, so a handover does not cause downtime. The old owner
+   can cancel before acceptance. After acceptance, the new owner controls it."
+
+Q22. Why .test?
+A: ".test is reserved by RFC 6761 for testing and will never collide with a real
+   public name. .local was rejected because it triggers multicast DNS behaviour;
+   .campus is not a delegated TLD. A real deployment would use a subdomain of the
+   university's owned zone."
+
+Q23. Why not use CoreDNS or BIND?
+A: "They are good at serving a zone; they do not implement delegated registry
+   authority, signed operations, ownership transfer, revocation and audit. We
+   built the registry rules and a small DNS wire engine. In production, the
+   registry could render a zone file or push RFC 2136 updates into BIND/CoreDNS."
+
+Q24. Why not use etcd or Raft?
+A: "etcd was considered and remains the production path. For this prototype I
+   wanted zero external dependencies and the workload allows a simpler protocol:
+   one writer at a time, followers never originate entries, so logs are prefixes
+   and no truncation is needed. The trade-off is no Byzantine tolerance and a less
+   battle-tested implementation, which I state explicitly."
+
+Q25. Why not use a blockchain?
+A: "A permissioned campus registry does not need mining or open membership. A
+   blockchain would add latency, complexity and a token/consensus model that does
+   not match the governance problem. We need known institutions, fast commits and
+   clear authority, not trustless open participation."
+
+Q26. Why not DNSSEC?
+A: "DNSSEC signs DNS answers; our Ed25519 signatures sign registry operations.
+   They solve different problems. DNSSEC is future work. Today the DNS layer uses
+   majority agreement, not cryptographic answer verification. That is a documented
+   limitation."
+
+Q27. How do you know it works?
+A: "Three layers of evidence: 54 unit and wire tests, 9 cluster failure/recovery
+   checks with real processes, 14 portal flow checks, and 11 live security
+   experiments. The experiments are the same code the portal buttons call, so the
+   report cannot drift from the demo."
+
+Q28. What are the biggest limitations?
+A: "No Byzantine registry consensus; two colluding DNS nodes can lie; static
+   membership; no real network partition testing; no key recovery; only IPv4 A
+   records; no DNSSEC; demo keys on the portal. All are documented."
+
+Q29. What would production need?
+A: "Proven consensus (Raft/etcd or BFT if malicious nodes are in scope), mutual
+   TLS between nodes, client-side key custody, dynamic membership, log compaction,
+   DNSSEC or signed zones, integration with the real university zone, monitoring,
+   rate limiting, backups and multi-site testing."
+
+Q30. Can it scale?
+A: "The prototype is three processes on one host; it is not a scalability study.
+   The protocol is O(nodes) per write and the DNS resolver queries all nodes, so
+   it is intended for a small permissioned set, not thousands of nodes. A
+   production design would shard namespaces or use a proven consensus cluster."
+
+Q31. What about latency?
+A: "The registry heartbeat is 0.25 s and writes wait for a majority; measured
+   commit latency was about 266 ms on this laptop. DNS propagation was about
+   0.11 s because there is no publisher poll anymore: the node refreshes its
+   snapshot on commit. These are observations, not benchmarks."
+
+Q32. What about caching?
+A: "DNS answers carry a 30-second TTL. A resolver cache can serve a revoked or
+   updated record until the TTL expires. That is inherent to DNS. The evaluation
+   measures the authoritative/quorum answer, not every cache in the world."
+
+Q33. What about internal API security?
+A: "The internal endpoints are bound to loopback in the demo and are not meant to
+   be exposed. Production requires mutual TLS and network policy between nodes.
+   The chaos endpoint is disabled unless --chaos is set and is loopback-only."
+
+Q34. Can the root forge my record?
+A: "The root cannot forge an owner's signature. It can revoke a domain or
+   namespace and can register names, but any root action is a root-signed
+   operation in the audit log. It cannot silently rewrite your record as if you
+   signed it."
+
+Q35. What if the root key is compromised?
+A: "Delegation is compromised: the attacker can delegate namespaces and revoke
+   things. It cannot forge an owner's signature, so record-level forgery would
+   still appear as a root-signed audit entry. Mitigation is 2-of-3 root signatures
+   and offline storage; specified, not implemented."
+
+Q36. What if the audit log is tampered with?
+A: "The hash chain detects any edit that breaks the chain, and verification reports
+   the first broken record. A malicious majority could rewrite the whole chain;
+   there is no external anchor. That is a residual risk, stated honestly."
+
+Q37. Can a revoked name be re-registered?
+A: "No. The name stays in the domains table as a tombstone, so a new registration
+   returns NAME_TAKEN. This prevents takeover of a revoked name. The same applies
+   to a revoked namespace."
+
+Q38. Can a domain move between namespaces?
+A: "No. A domain is registered inside its governing namespace and there is no move
+   operation. You would revoke and register under the new namespace, which is a
+   deliberate, auditable action."
+
+Q39. What about privacy?
+A: "Registry state and audit are public inside the lab: names, owners (public
+   keys), records and history. There is no privacy layer, no GDPR work, and no
+   attempt to hide who owns what. A production deployment would need a data
+   protection review."
+
+Q40. What is the novel or interesting part?
+A: "The combination: delegated namespace authority, signed operations, quorum
+   replication, per-node DNS serving, and client-side majority agreement. It is
+   not just a replicated database and not just a DNS server; it connects the
+   governance layer to the resolution layer and demonstrates the failure cases."
+
+Q41. What did you learn?
+A: "That the hard part of a registry is authority and failure semantics, not
+   storage. And that 'decentralized DNS' is not one thing: serving, data,
+   authority and answer agreement can be decentralized separately. Majority
+   agreement buys tolerance of one liar but not two, and that boundary has to be
+   stated."
+
+Q42. What was the hardest part?
+A: "Keeping the state machine deterministic while adding replication, and making
+   the DNS layer honest: avoiding a central publisher, comparing semantic answers
+   rather than packets, and handling no-majority with SERVFAIL instead of silently
+   trusting one node."
+
+Q43. Why Python?
+A: "Rapid, readable prototyping with excellent cryptography and HTTP libraries.
+   Performance is not the goal; correctness and demonstrability are. A production
+   hot path could be rewritten or delegated to proven infrastructure."
+
+Q44. What is the one thing you want the audience to remember?
+A: "Authority is delegated, state is replicated, DNS is served by every node, and
+   answers are accepted only by majority. The root trust anchor remains, and we
+   say so."
+
+Q45. If I only remember one diagram, what is it?
+A: "Three registry nodes in a mesh, each with its own DNS port. A client resolver
+   fans out to all three and returns an answer only when two agree. The registry
+   log is majority-committed; the DNS answer is majority-agreed."
+
+
+================================================================================
+22. ELEVATOR PITCHES
+================================================================================
+
+22.1 Thirty-second pitch
+------------------------
+"DCDNS is a permissioned campus DNS registry. The root delegates namespaces to
+departments; every change is signed with Ed25519 and committed by a majority of
+three nodes. Each node also serves DNS from its own committed state, and a client
+resolver accepts an answer only when two of three nodes agree. So there is no
+central DNS server to trust, and one lying node cannot change the answer. It is
+a working prototype with a portal, 54 tests, 9 cluster checks and 11 live
+experiments."
+
+22.2 Two-minute pitch
+---------------------
+"Universities have one DNS namespace but many departments. Central IT does not
+want to create every name, but it also cannot let anyone claim any name. DCDNS
+solves that with delegated namespace authority. The root authorizes cs.test and
+library.test; the CS controller can then delegate team.cs.test to a student and
+grant members permission to register names. Every operation is signed with
+Ed25519, so ownership is cryptographic, not a password in a database.
+
+The registry is replicated across three nodes. A write is accepted only after a
+majority stores it. If one node dies, the other two continue; if the coordinator
+dies, another takes over; if two die, writes stop rather than diverge.
+
+The DNS part is what makes this more than a replicated database. Every registry
+node is also an authoritative DNS server, on its own port. There is no separate
+DNS publisher. A client-facing resolver sends each query to all three nodes and
+returns an answer only when two agree. One node can lie or be stale; the majority
+wins. If two nodes are down, the resolver returns SERVFAIL rather than trusting
+one node.
+
+The honest boundaries: the root trust anchor remains, membership is configured,
+the registry consensus is not Byzantine-fault-tolerant, two colluding DNS nodes
+can lie, and DNSSEC is not implemented. We document those rather than hiding
+them. The evidence is 54 tests, 9 cluster failure checks, 14 portal flow checks
+and 11 live experiments, including a lying-node demo."
+
+22.3 Technical two-minute pitch
+-------------------------------
+"The system has two planes. The registry plane is a deterministic state machine
+over signed operations: delegate_namespace, grant_member, register_domain,
+update_records, transfer_initiate/accept/cancel, revoke_domain, revoke_namespace
+and rotate_controller. The envelope has a version, actor, nonce, timestamp, body
+and Ed25519 signature over canonical JSON with domain separation. The state
+machine validates the envelope, signature, nonce, authorization and record policy
+on a clone before the coordinator appends anything. A write is committed when a
+majority stores it; the state applies committed entries and refreshes a flat DNS
+snapshot.
+
+The DNS plane is per-node. Each node runs a UDP responder on its own port and
+answers from its committed snapshot with a 30-second TTL. The client resolver
+queries all configured nodes, reduces responses to RCODE plus sorted answer
+records, and requires 2 of 3 agreement. It ignores transaction IDs, flags, TTLs
+and record order. No majority means SERVFAIL. The resolver has no zone and no
+keys; it is a comparison point, not an authority.
+
+The trade-offs are explicit: single-writer coordinator for ordering, no BFT, no
+dynamic membership, no log compaction, no DNSSEC, no AAAA. The evidence includes
+wire-level tests, majority tests, a real three-process cluster smoke test with
+leader failover and catch-up, and a chaos experiment where one node lies and is
+outvoted."
+
+
+================================================================================
+23. TROUBLESHOOTING
+================================================================================
+
+Port already in use
+  Stop the python processes whose command line mentions dcdns.node,
+  dcdns.portal, dcdns.quorum_resolver or run_demo, then rerun.
+
+Portal shows no quorum
+  Wait a few seconds; the coordinator election is asynchronous. If it persists,
+  check the node logs in data/live/logs/n1.log, n2.log, n3.log. Rerun with
+  --fresh if the data is inconsistent.
+
+DNS returns nothing
+  Check:
+    - the demo was started without --no-dns,
+    - the node logs show the DNS responder bound its port,
+    - http://127.0.0.1:5380/metrics is reachable,
+    - you are querying the right port with python -m dcdns.dig.
+  On Windows, nslookup ignores -port; use dig.py.
+
+Quorum experiment fails with chaos disabled
+  The quorum_dns experiment needs nodes started with --chaos. run_demo enables it
+  unless you pass --no-dns. Start nodes manually with --chaos if needed.
+
+cluster_smoke.py fails with address in use
+  Stop the live demo first. The smoke test uses 9101-9103 and data/smoke.
+
+Stale data after a change
+  The dashboard shows per-node revisions; wait for convergence. If a node is
+  isolated, it will not catch up until it can reach a majority. Use --fresh for a
+  clean demo.
+
+Portal 500 after editing a template
+  Check data/live/logs/portal.log. Jinja errors show the template and line. The
+  portal auto-reloads templates, but a syntax error will break the page.
+
+A revoked name still resolves
+  A resolver cache may hold it until the 30-second TTL. Query the quorum resolver
+  directly. If the authoritative answer is still present, check that the
+  revocation committed and the node revision advanced.
+
+Two nodes down and DNS returns SERVFAIL
+  This is expected. The resolver requires 2 of 3 configured nodes. It will not
+  trust a single node.
+
+Everything is slow
+  The demo runs three nodes, a resolver and a portal on one machine. Check CPU
+  load and antivirus scanning of the data directory. Timing numbers are
+  observations, not benchmarks.
+
+
+================================================================================
+24. FILE MAP: WHAT EACH FILE DOES
+================================================================================
+
+Top level
+---------
+run_demo.py                 One-command launcher: identities, nodes, DNS,
+                            quorum resolver, portal, supervisor.
+README.md                   Project overview and quick start.
+requirements.txt            Python dependencies.
+pytest.ini                  Test configuration.
+DCDNS_PROJECT_GUIDE.txt     This guide.
+
+dcdns/
+------
+__init__.py                 Package marker.
+crypto.py                   Ed25519 keys, canonical JSON, signing, verification,
+                            nonces, fingerprints, key files.
+names.py                    Domain/namespace syntax and record policy.
+state.py                    Deterministic registry state machine. The heart of
+                            the authorization logic.
+errors.py                   RegistryError and error codes.
+cluster.py                  Replicated log, coordinator election, majority commit,
+                            follower catch-up, DNS snapshot refresh.
+node.py                     FastAPI HTTP API for one registry node, DNS responder
+                            lifecycle, internal endpoints, chaos.
+client.py                   Cluster-aware HTTP client.
+dns_server.py               DNS wire format: name parsing, A response encoding,
+                            DNSEngine (zone snapshot + query handling).
+dns_node.py                 Per-node UDP DNS responder thread and overrides.
+quorum_resolver.py          Client-facing majority resolver, metrics, CLI.
+dig.py                      Small DNS query CLI for the demo.
+portal.py                   FastAPI + Jinja2 web portal.
+experiments.py              Live security experiments, shared by portal and CLI.
+bootstrap.py                Demo identities.
+runtime.py                  Event-loop configuration helper.
+templates/                  Jinja2 pages and partials.
+static/                     CSS and progressive-enhancement JavaScript.
+
+tests/
+------
+test_state.py               33 state-machine, authorization, transfer, audit and
+                            DNS snapshot tests.
+test_dns_wire.py            10 DNS wire-format tests.
+test_quorum_resolver.py     11 majority, per-node responder and SERVFAIL tests.
+
+scripts/
+--------
+cluster_smoke.py            Three-node failure/recovery checks (9 checks).
+portal_flow.py              End-to-end portal form flow (14 checks).
+evaluate.py                 Runs all experiments, writes EVALUATION_RESULTS.md.
+
+docs/
+-----
+SPECIFICATION.md            Protocol, data model, operations, error codes,
+                            guarantees.
+ARCHITECTURE.md             Decisions and rejected alternatives (ADR-1 to ADR-6).
+THREAT_MODEL.md             Assets, adversaries, mitigations, residual risk.
+EVALUATION.md               Method, metrics, interpretation.
+EVALUATION_RESULTS.md       Generated results from the last live run.
+DEMO_SCRIPT.md              Presentation walkthrough.
+
+data/live/
+----------
+n1/log.jsonl                n1 append-only operation log.
+n1/meta.json                n1 term and commit index.
+n2/..., n3/...              Same for n2 and n3.
+logs/n1.log, n2.log, n3.log Node stdout/stderr.
+logs/quorum.log             Quorum resolver stdout/stderr.
+logs/portal.log             Portal stdout/stderr.
+
+identities/
+-----------
+root.json                   Root authority key pair (demo).
+cs-admin.json               CS department controller.
+library-admin.json          Library controller.
+alice.json                  CS student/member.
+bob.json                    Student, controller of team.cs.test.
+mallory.json                Unaffiliated attacker.
+index.json                  Labels, public keys, fingerprints.
+
+
+================================================================================
+25. KEY SENTENCES TO REMEMBER
+================================================================================
+
+If you remember nothing else, remember these:
+
+1. "It is a permissioned registry, not a blockchain."
+
+2. "Authority is delegated from the root to departments; ownership is proven by
+   Ed25519 signatures."
+
+3. "Three nodes replicate the state; a write commits only after a majority
+   stores it."
+
+4. "The leader is a temporary coordinator elected by a majority, not a central
+   owner. It cannot change a record without a valid signature."
+
+5. "Every registry node is also an authoritative DNS server. There is no central
+   DNS publisher."
+
+6. "The client resolver asks all three nodes and returns an answer only when two
+   agree."
+
+7. "One lying node is outvoted; two colluding nodes can lie. That is the honest
+   majority trust boundary."
+
+8. "Two nodes down: writes stop and DNS returns SERVFAIL rather than trusting one
+   node."
+
+9. "Revocation is terminal: the name leaves DNS and cannot be re-registered."
+
+10. "The root trust anchor remains, membership is configured, consensus is not
+    Byzantine-fault-tolerant, and DNSSEC is not implemented."
+
+11. "The evidence is 54 tests, 9 cluster checks, 14 portal checks and 11 live
+    experiments."
+
+12. "The project is about authority and failure semantics, not just storing rows."
+
+
+================================================================================
+26. FINAL PRESENTATION CHECKLIST
+================================================================================
+
+Before the demo
+---------------
+[ ] pip install -r requirements.txt
+[ ] Stop any old python demo processes.
+[ ] python run_demo.py --fresh
+[ ] Wait for READY.
+[ ] Open http://127.0.0.1:8000.
+[ ] Run python -m dcdns.dig techfest.cs.test --all.
+[ ] Confirm three nodes and the quorum resolver return 10.20.5.42.
+[ ] Open http://127.0.0.1:5380/metrics and confirm it responds.
+[ ] Have a second terminal ready for dig commands.
+
+During the demo
+---------------
+[ ] Start with the one-sentence explanation.
+[ ] Show the dashboard: three nodes, one coordinator, same revision.
+[ ] Show the decentralized DNS panel and per-node authorities.
+[ ] Register a name and query all nodes.
+[ ] Update the address and show propagation.
+[ ] Try Mallory's forged update; show UNAUTHORIZED.
+[ ] Run the lying-node experiment; show the honest majority answer.
+[ ] Revoke a name; show NXDOMAIN and no re-registration.
+[ ] Show the audit chain.
+[ ] Mention one failure scenario (one node down, two down).
+
+Before questions
+----------------
+[ ] Say the honest boundary before someone asks: permissioned, root anchor,
+    not BFT, two colluding DNS nodes can lie, no DNSSEC.
+[ ] Have the numbers ready: 54/54, 9/9, 14/14, 11/11.
+[ ] Have the ports ready: 8000 portal, 9101-9103 APIs, 5354-5356 node DNS,
+    5353 quorum DNS, 5380 metrics.
+
+The three sentences to end on
+-----------------------------
+"Authority is delegated, state is replicated, and every node serves DNS. Clients
+accept an answer only when a majority agrees. The root trust anchor and the
+non-Byzantine consensus are the honest boundaries we document."
+
+
+================================================================================
+END OF GUIDE
+================================================================================
+
+
+

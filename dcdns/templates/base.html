@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DCDNS{% endblock %} · Campus Domain Registry</title>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="dot"></span>
+      DCDNS <small>campus domain registry</small>
+    </div>
+    <nav class="main">
+      <a href="/" class="{{ 'active' if active == 'dashboard' }}">Dashboard</a>
+      <a href="/domains" class="{{ 'active' if active == 'domains' }}">Domains</a>
+      <a href="/namespaces" class="{{ 'active' if active == 'namespaces' }}">Namespaces</a>
+      <a href="/audit" class="{{ 'active' if active == 'audit' }}">Audit</a>
+      <a href="/experiments" class="{{ 'active' if active == 'experiments' }}">Experiments</a>
+      <a href="/identities" class="{{ 'active' if active == 'identities' }}">Identities</a>
+    </nav>
+    <form class="identity-picker" method="post" action="/identity">
+      <label for="identity">Acting as</label>
+      <select id="identity" name="identity" onchange="this.form.submit()">
+        {% for item in identities %}
+          <option value="{{ item.name }}" {{ 'selected' if identity and identity.name == item.name }}>
+            {{ item.label }}
+          </option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+</header>
+
+<main class="container">
+  {% if flash %}
+    <div class="flash {{ 'ok' if flash.ok else 'err' }}">
+      {% if flash.code %}<span class="mono">[{{ flash.code }}]</span>{% endif %}
+      {{ flash.message }}
+    </div>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+</main>
+
+<footer>
+  DCDNS prototype · permissioned registry with delegated namespace authority ·
+  Ed25519 operations · quorum-replicated state · decentralized DNS with majority agreement
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

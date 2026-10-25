@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 style="margin:0">Registry overview</h1>
+  <span class="spacer"></span>
+  <span class="badge accent" id="live-badge">live</span>
+</div>
+
+<div id="live-status">
+  {% include "partials/status.html" %}
+</div>
+
+<div class="grid cols-2 mt">
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Recent accepted operations</h2>
+      <a class="small" href="/audit">full audit trail →</a>
+    </div>
+    {% if audit %}
+    <table>
+      <thead><tr><th>Rev</th><th>Operation</th><th>Target</th><th>By</th></tr></thead>
+      <tbody>
+      {% for record in audit %}
+        <tr>
+          <td class="tnum">{{ record.revision }}</td>
+          <td><span class="badge muted">{{ record.op }}</span></td>
+          <td class="mono">{{ record.target }}</td>
+          <td class="small">{{ labels.get(record.actor, record.actor[:10] ~ '…') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <div class="empty">No operations committed yet.</div>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Try a lookup</h2></div>
+    <form method="get" action="/domains">
+      <label class="field">
+        <span>Domain name</span>
+        <input type="text" name="q" placeholder="techfest.cs.test" value="">
+      </label>
+      <button class="primary" type="submit">Resolve in registry</button>
+    </form>
+    <p class="hint">
+      Every registry node also answers DNS on its own port. The client-facing
+      resolver on <code>127.0.0.1:5353</code> asks all three and returns an
+      answer only when a majority agrees. Try
+      <code>python -m dcdns.dig techfest.cs.test --all</code>.
+    </p>
+    <div class="panel-head mt"><h2>What you are looking at</h2></div>
+    <p class="small muted" style="margin:0">
+      Three registry nodes replicate a signed, ordered operation log. Writes are
+      acknowledged only after a majority stores them. Each node independently
+      serves DNS from the committed state it holds, so there is no central DNS
+      server to trust: a client-facing quorum resolver accepts an answer only
+      when 2 of 3 nodes agree. Revoked names stop resolving everywhere.
+    </p>
+  </section>
+</div>
+{% endblock %}

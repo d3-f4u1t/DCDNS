@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}{{ domain.name }}{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 class="mono" style="margin:0">{{ domain.name }}</h1>
+  {% if domain.status == 'active' %}<span class="badge ok">active</span>
+  {% elif domain.status == 'pending_transfer' %}<span class="badge warn">transfer pending</span>
+  {% else %}<span class="badge danger">revoked</span>{% endif %}
+  <span class="spacer"></span>
+  <a class="btn" href="/domains">← all domains</a>
+</div>
+
+<div class="grid cols-2" style="grid-template-columns: 1fr 1fr; align-items:start">
+  <section class="panel">
+    <div class="panel-head"><h2>Record</h2></div>
+    <div class="stat-row mb">
+      <div class="stat">
+        <span class="value mono">{{ domain.records.A }}</span>
+        <span class="label">IPv4 · A record</span>
+      </div>
+    </div>
+    <dl class="kv">
+      <dt>namespace</dt><dd>{{ domain.namespace }}</dd>
+      <dt>owner</dt><dd>{{ labels.get(domain.owner, 'unknown') }}<br>{{ domain.owner }}</dd>
+      <dt>fingerprint</dt><dd>{{ fingerprints.get(domain.owner, '—') }}</dd>
+      <dt>created</dt><dd>revision {{ domain.created_revision }}</dd>
+      <dt>last update</dt><dd>revision {{ domain.updated_revision }}</dd>
+      {% if domain.status == 'revoked' %}
+      <dt>revoked at</dt><dd>revision {{ domain.revoked_revision }}</dd>
+      <dt>reason</dt><dd>{{ domain.revoked_reason or '—' }}</dd>
+      {% endif %}
+    </dl>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Actions</h2></div>
+
+    {% if domain.status == 'active' %}
+      {% if can_edit %}
+      <form method="post" action="/domains/{{ domain.name }}/records">
+        <label class="field">
+          <span>Update A record</span>
+          <input type="text" name="address" value="{{ domain.records.A }}" required pattern="[0-9.]+">
+        </label>
+        <button class="primary" type="submit">Sign update</button>
+      </form>
+      {% endif %}
+
+      {% if is_owner %}
+      <hr style="border:none;border-top:1px solid var(--border);margin:1rem 0">
+      <form method="post" action="/domains/{{ domain.name }}/transfer">
+        <label class="field">
+          <span>Transfer ownership to</span>
+          <select name="new_owner">
+            {% for item in identities %}
+              {% if item.public_key != domain.owner %}
+              <option value="{{ item.public_key }}">{{ item.label }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Initiate transfer</button>
+        <div class="hint">The recipient must accept before ownership moves.</div>
+      </form>
+      {% endif %}
+
+      {% if is_owner or is_controller %}
+      <form method="post" action="/domains/{{ domain.name }}/revoke" class="mt"
+            data-confirm="Revoke {{ domain.name }}? It will stop resolving in DNS.">
+        <label class="field">
+          <span>Revoke domain</span>
+          <input type="text" name="reason" placeholder="reason (optional)">
+        </label>
+        <button class="danger" type="submit">Revoke</button>
+      </form>
+      {% endif %}
+    {% endif %}
+
+    {% if domain.status == 'pending_transfer' and domain.transfer %}
+      <div class="flash ok" style="margin-bottom:1rem">
+        Pending transfer to <strong>{{ labels.get(domain.transfer.new_owner, domain.transfer.new_owner[:12] ~ '…') }}</strong>
+        (initiated at revision {{ domain.transfer.initiated_revision }}).
+        Records are frozen until this completes.
+      </div>
+      {% if domain.transfer.new_owner == identity.public_key %}
+      <form method="post" action="/domains/{{ domain.name }}/transfer/accept" class="inline-form">
+        <button class="primary" type="submit">Accept ownership</button>
+      </form>
+      {% endif %}
+      {% if is_owner %}
+      <form method="post" action="/domains/{{ domain.name }}/transfer/cancel" class="inline-form">
+        <button type="submit">Cancel transfer</button>
+      </form>
+      {% endif %}
+    {% endif %}
+
+    {% if domain.status == 'revoked' %}
+      <p class="small muted" style="margin:0">
+        This name is withdrawn from DNS. The audit history is preserved and the
+        name cannot be re-registered.
+      </p>
+    {% elif not can_edit and not is_owner and not is_controller and domain.status == 'active' %}
+      <p class="small muted" style="margin:0">
+        You hold no authority over this name. Signing in as the owner
+        ({{ labels.get(domain.owner, 'the owner') }}) or the controller of
+        <code>{{ domain.namespace }}</code> is required to change it.
+      </p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel mt">
+  <div class="panel-head">
+    <h2>Operation history</h2>
+    <span class="badge muted">{{ history | length }} operations</span>
+  </div>
+  {% if history %}
+  <table>
+    <thead><tr><th>Revision</th><th>Operation</th><th>Signed by</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for entry in history %}
+      <tr>
+        <td class="tnum">{{ entry.revision }}</td>
+        <td><span class="badge muted">{{ entry.op }}</span></td>
+        <td class="small">{{ labels.get(entry.actor, entry.actor[:10] ~ '…') }}</td>
+        <td class="mono small">{{ entry.detail | tojson }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">No operations recorded for this name.</div>
+  {% endif %}
+</section>
+
+{% if domain.status == 'active' %}
+<section class="panel mt">
+  <div class="panel-head"><h2>DNS view</h2></div>
+  <p class="small muted" style="margin:0">
+    Each registry node answers for this name from its own committed state.
+    The quorum resolver returns the majority answer:
+    <code>python -m dcdns.dig {{ domain.name }} --all</code>.
+    A direct query to one node is visible too, for example
+    <code>python -m dcdns.dig {{ domain.name }} --port 5354</code>.
+    Answers carry a TTL of 30 seconds.
+  </p>
+</section>
+{% endif %}
+{% endblock %}

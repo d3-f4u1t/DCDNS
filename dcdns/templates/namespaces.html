@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Namespaces{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 style="margin:0">Delegated namespaces</h1>
+  <span class="spacer"></span>
+  <span class="badge muted">{{ tree | length }} namespaces</span>
+</div>
+
+<p class="small muted" style="margin-top:-0.5rem">
+  Authority is delegated top-down: the root authority creates departmental
+  namespaces, departments may delegate sub-namespaces to project teams, and a
+  controller may only act inside its own subtree.
+</p>
+
+<div class="grid cols-2" style="grid-template-columns: 1.4fr 1fr; align-items:start">
+  <section class="panel">
+    <div class="panel-head"><h2>Hierarchy</h2></div>
+    {% if tree %}
+    <ul class="tree" style="border-left:none;padding-left:0">
+      {% for node in tree %}
+      <li style="margin-left: {{ node.depth * 1.4 }}rem">
+        <div class="row">
+          <span class="dot-live {{ 'up' if node.status == 'active' else 'down' }}"></span>
+          <span class="ns-name">{{ node.name }}</span>
+          {% if node.status == 'active' %}<span class="badge ok">active</span>
+          {% else %}<span class="badge danger">revoked</span>{% endif %}
+          {% if node.controller == identity.public_key %}<span class="badge accent">you control this</span>{% endif %}
+        </div>
+        <div class="small muted" style="margin-left:1.1rem">
+          controller: {{ labels.get(node.controller, node.controller[:12] ~ '…') }}
+          {% if node.members %} · {{ node.members | length }} registrar(s){% endif %}
+          · created at revision {{ node.created_revision }}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+      <div class="empty">No namespaces delegated yet.</div>
+    {% endif %}
+  </section>
+
+  <div class="grid" style="gap:1rem">
+    <section class="panel">
+      <div class="panel-head"><h2>Delegate a namespace</h2></div>
+      <p class="small muted">
+        Acting as <strong>{{ identity.label }}</strong>. Top-level names require
+        the root authority; sub-namespaces require control of the parent.
+      </p>
+      <form method="post" action="/namespaces/delegate">
+        <label class="field">
+          <span>Namespace</span>
+          <input type="text" name="name" placeholder="robotics.cs.test" required>
+        </label>
+        <label class="field">
+          <span>Controller</span>
+          <select name="controller">
+            {% for item in identities %}
+              <option value="{{ item.public_key }}">{{ item.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="primary" type="submit">Sign delegation</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Grant registrar rights</h2></div>
+      <p class="small muted">
+        Allow another identity to register names inside a namespace you control,
+        without handing over the namespace itself.
+      </p>
+      <form method="post" action="/namespaces/grant">
+        <label class="field">
+          <span>Namespace</span>
+          <select name="namespace">
+            {% for node in tree %}
+              {% if node.status == 'active' %}
+              <option value="{{ node.name }}">{{ node.name }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          <span>Member</span>
+          <select name="member">
+            {% for item in identities %}
+              <option value="{{ item.public_key }}">{{ item.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Grant</button>
+      </form>
+    </section>
+  </div>
+</div>
+{% endblock %}

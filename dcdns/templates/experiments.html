@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Experiments{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 style="margin:0">Security &amp; failure experiments</h1>
+  <span class="spacer"></span>
+  <span class="badge muted">live against the running cluster</span>
+</div>
+
+<p class="small muted" style="margin-top:-0.5rem">
+  Each experiment performs a real signed operation against the live registry and
+  reports what the system actually did. Nothing here is simulated.
+</p>
+
+<div class="grid" style="gap:0.8rem">
+  {% for experiment in experiments %}
+  <div class="experiment">
+    <div>
+      <div class="row">
+        <strong>{{ experiment.title }}</strong>
+        {% if results.get(experiment.id) %}
+          {% if results[experiment.id].passed %}
+            <span class="badge ok">PASS</span>
+          {% else %}
+            <span class="badge danger">FAIL</span>
+          {% endif %}
+        {% endif %}
+      </div>
+      <div class="meta">{{ experiment.description }}</div>
+      <div class="meta">expected: {{ experiment.expectation }}</div>
+      {% if results.get(experiment.id) %}
+        <div class="result">
+          observed: {{ results[experiment.id].observed }}
+        </div>
+      {% endif %}
+    </div>
+    <form method="post" action="/experiments/{{ experiment.id }}">
+      <button type="submit">Run</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+
+<section class="panel mt">
+  <div class="panel-head"><h2>Why these matter</h2></div>
+  <p class="small muted" style="margin:0">
+    A registry that only works when everyone behaves is not evidence of anything.
+    These experiments exercise the failure paths the design claims to handle:
+    unauthorized writes, replayed signatures, cross-namespace delegation, record
+    policy violations, ownership transfer, revocation, and DNS convergence.
+  </p>
+</section>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Identities{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 style="margin:0">Identities</h1>
+  <span class="spacer"></span>
+  <span class="badge muted">Ed25519</span>
+</div>
+
+<p class="small muted" style="margin-top:-0.5rem">
+  The registry has no account database. A participant <em>is</em> the holder of a
+  private key; every operation carries a signature that every node verifies
+  independently.
+</p>
+
+<section class="panel mt">
+  <div class="panel-head"><h2>Demo participants</h2></div>
+  <table>
+    <thead>
+      <tr><th>Participant</th><th>Role</th><th>Namespace</th><th>Fingerprint</th><th>Public key</th></tr>
+    </thead>
+    <tbody>
+    {% for item in identities %}
+      <tr>
+        <td>
+          {{ item.label }}
+          {% if item.name == identity.name %}<span class="badge accent">acting</span>{% endif %}
+        </td>
+        <td><span class="badge muted">{{ item.role }}</span></td>
+        <td class="mono small">{{ item.member_of or '—' }}</td>
+        <td class="mono small">{{ item.fingerprint }}</td>
+        <td class="hash">{{ item.public_key }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<div class="login-note mt">
+  <strong>Prototype key custody.</strong> For demonstration convenience this portal
+  holds the private keys on disk and signs on behalf of the selected identity.
+  In a real deployment signing happens on the client — a browser wallet, smart
+  card or department HSM — and the private key never reaches the server. This is
+  the single largest simplification in the prototype and is documented as such.
+</div>
+
+<section class="panel mt">
+  <div class="panel-head"><h2>What each role may do</h2></div>
+  <table>
+    <thead><tr><th>Role</th><th>Permissions</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge accent">root</span></td>
+          <td class="small">Create and revoke top-level campus namespaces; delegate the root zone.</td></tr>
+      <tr><td><span class="badge muted">department</span></td>
+          <td class="small">Manage its namespace, delegate sub-namespaces, grant registrar rights,
+          register names, revoke names inside its subtree.</td></tr>
+      <tr><td><span class="badge muted">student</span></td>
+          <td class="small">Register names where granted, update records of names it owns,
+          transfer ownership, revoke its own names.</td></tr>
+      <tr><td><span class="badge muted">outsider</span></td>
+          <td class="small">May submit signed operations; every one is rejected because it holds
+          no delegated authority.</td></tr>
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Domains{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 style="margin:0">Registered domains</h1>
+  <span class="spacer"></span>
+  <form method="get" action="/domains" class="row">
+    <input type="text" name="q" placeholder="filter by name" value="{{ q or '' }}" style="width:220px">
+    <button type="submit">Filter</button>
+  </form>
+</div>
+
+<div class="grid cols-2" style="grid-template-columns: 2fr 1fr; align-items:start">
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Registry contents</h2>
+      <span class="badge muted">revision {{ revision }}</span>
+    </div>
+    {% if domains %}
+    <table>
+      <thead>
+        <tr><th>Name</th><th>A record</th><th>Owner</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+      {% for domain in domains %}
+        <tr>
+          <td><a class="mono" href="/domains/{{ domain.name }}">{{ domain.name }}</a></td>
+          <td class="mono">{{ domain.records.A }}</td>
+          <td class="small">
+            {{ labels.get(domain.owner, domain.owner[:10] ~ '…') }}
+            {% if domain.owner == identity.public_key %}<span class="badge accent">you</span>{% endif %}
+          </td>
+          <td>
+            {% if domain.status == 'active' %}<span class="badge ok">active</span>
+            {% elif domain.status == 'pending_transfer' %}<span class="badge warn">transfer pending</span>
+            {% else %}<span class="badge danger">revoked</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <div class="empty">No domains match. Register one on the right.</div>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Register a domain</h2></div>
+    <p class="small muted">
+      Acting as <strong>{{ identity.label }}</strong>. The operation will be signed
+      with your key and validated by every node.
+    </p>
+    <form method="post" action="/domains/register">
+      <label class="field">
+        <span>Fully qualified name</span>
+        <input type="text" name="name" placeholder="techfest.cs.test" required
+               pattern="[A-Za-z0-9.\-]+">
+        <div class="hint">Must fall inside a namespace you control or may register under.</div>
+      </label>
+      <label class="field">
+        <span>IPv4 address (A record)</span>
+        <input type="text" name="address" placeholder="10.20.5.42" required
+               pattern="[0-9.]+">
+        <div class="hint">Campus address space only (10/8, 172.16/12, 192.168/16, 127/8).</div>
+      </label>
+      <button class="primary" type="submit">Sign and submit</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

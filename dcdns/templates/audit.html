@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Audit{% endblock %}
+
+{% block content %}
+<div class="row mb">
+  <h1 style="margin:0">Audit trail</h1>
+  <span class="spacer"></span>
+  {% if verify.ok %}
+    <span class="badge ok">hash chain verified · {{ verify.length }} records</span>
+  {% else %}
+    <span class="badge danger">chain broken at record {{ verify.broken_at }}</span>
+  {% endif %}
+</div>
+
+<p class="small muted" style="margin-top:-0.5rem">
+  Every accepted operation is appended to a hash-chained log. Each record commits
+  to its predecessor, so silently editing history is detectable: change one
+  record and every subsequent hash no longer matches.
+</p>
+
+<section class="panel mt">
+  <div class="panel-head">
+    <h2>Committed operations</h2>
+    <span class="badge muted">revision {{ revision }}</span>
+  </div>
+  {% if records %}
+  <table>
+    <thead>
+      <tr><th>#</th><th>Rev</th><th>Operation</th><th>Target</th><th>Actor</th><th>Record hash</th></tr>
+    </thead>
+    <tbody>
+    {% for record in records | reverse %}
+      <tr>
+        <td class="tnum">{{ record.seq }}</td>
+        <td class="tnum">{{ record.revision }}</td>
+        <td><span class="badge muted">{{ record.op }}</span></td>
+        <td class="mono small">{{ record.target }}</td>
+        <td class="small">{{ labels.get(record.actor, record.actor[:10] ~ '…') }}</td>
+        <td class="hash">{{ record.hash[:24] }}…</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">No operations committed yet.</div>
+  {% endif %}
+</section>
+
+<section class="panel mt">
+  <div class="panel-head"><h2>Chain head</h2></div>
+  <dl class="kv">
+    <dt>records</dt><dd>{{ verify.length }}</dd>
+    <dt>head hash</dt><dd>{{ verify.head }}</dd>
+    <dt>verification</dt><dd>{{ 'valid' if verify.ok else 'INVALID' }}</dd>
+  </dl>
+</section>
+{% endblock %}
