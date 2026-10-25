@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # DCDNS — Decentralized Campus Domain Registry
 
 A permissioned registry for campus DNS namespaces. Authorized participants
