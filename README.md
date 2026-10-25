@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # DCDNS — Decentralized Campus Domain Registry
 
 A permissioned registry for campus DNS namespaces. Authorized participants
@@ -190,3 +191,6 @@ its boundaries.
 | [docs/EVALUATION.md](docs/EVALUATION.md) | Method, measurements, and how to reproduce |
 | [docs/EVALUATION_RESULTS.md](docs/EVALUATION_RESULTS.md) | Generated results from the last live run |
 | [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Presentation script with timings |
+=======
+# DCDNS
+>>>>>>> f0201177fb56e1dfd501a21ca22f24c14eb50b2c
