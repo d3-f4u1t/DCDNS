@@ -13,6 +13,9 @@ HOW TO USE THIS GUIDE
 - Running the demo? Read section 18.
 - Trying to understand the code? Read sections 5 to 14.
 - Writing a report? Sections 2, 14, 15, 19 and 20 are the important ones.
+- Submitting the patent-style idea? See DCDNS_PATENT_IDEA_COMPACT.txt for the
+  submission version, DCDNS_PATENT_IDEA.txt for the full discussion, and the
+  "Patent / invention disclosure" section in README.md.
 
 The guide is deliberately written twice: once in simple language, and once with
 the technical detail. If a sentence sounds too abstract, look for the analogy
@@ -1588,7 +1591,8 @@ the registry auditable rather than just a key-value store.
 /audit                  Global audit trail and hash-chain verification.
 /experiments            Run the live security experiments.
 /identities             Demo identities, keys, fingerprints, roles.
-/health                 Portal health check (used by the launcher).
+/health                 Portal liveness check (used by the launcher).
+/ready                  Portal readiness: can it read committed cluster state?
 /partials/status        HTML fragment polled by the dashboard.
 /static/*               CSS and JavaScript.
 
@@ -1872,10 +1876,10 @@ Drives the actual HTTP forms:
 19.5 Latest measured values
 ---------------------------
 From the last live run (these vary with machine load):
-  - DNS propagation: about 0.11 s after the client response.
-  - Revocation withdrawal: about 0.31 s.
-  - Commit latency: about 266 ms.
-  - Quorum DNS: n3 returned 10.20.5.66, quorum returned 10.20.5.123.
+  - DNS propagation: about 0.20 s after the client response.
+  - Revocation withdrawal: about 0.11 s.
+  - Commit latency: about 422 ms.
+  - Quorum DNS: n3 returned 10.20.5.66, quorum returned 10.20.5.124.
 
 Do not present these as universal benchmarks. They are observations on one
 laptop with three processes. The point is the mechanism, not the exact number.
@@ -2150,8 +2154,8 @@ A: "The prototype is three processes on one host; it is not a scalability study.
 
 Q31. What about latency?
 A: "The registry heartbeat is 0.25 s and writes wait for a majority; measured
-   commit latency was about 266 ms on this laptop. DNS propagation was about
-   0.11 s because there is no publisher poll anymore: the node refreshes its
+   commit latency was about 422 ms on this laptop. DNS propagation was about
+   0.20 s because there is no publisher poll anymore: the node refreshes its
    snapshot on commit. These are observations, not benchmarks."
 
 Q32. What about caching?
@@ -2362,6 +2366,10 @@ README.md                   Project overview and quick start.
 requirements.txt            Python dependencies.
 pytest.ini                  Test configuration.
 DCDNS_PROJECT_GUIDE.txt     This guide.
+DCDNS_PATENT_IDEA.txt          Candidate invention disclosure (revision-aware
+                               majority DNS); not filed, not legal advice.
+DCDNS_PATENT_IDEA_COMPACT.txt  Compact submission version: 11 sections,
+                               15 draft claims, validation plan, limitations.
 
 dcdns/
 ------

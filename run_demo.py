@@ -141,13 +141,52 @@ def seed(client: ClusterClient, keys: dict[str, crypto.KeyPair]) -> None:
 
 
 def _http_ok(url: str) -> bool:
-    import httpx
+    """Cheap health probe for the supervisor loop.
 
+    Deliberately avoids httpx here. Constructing an httpx.Client builds an SSL
+    context from the Windows certificate store, and doing that every two
+    seconds can stall the supervisor (observed on this machine). The probe is
+    plain http on loopback, so no TLS is involved at all.
+    """
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with httpx.Client(timeout=1.5) as http:
-            return http.get(url).status_code == 200
+        with opener.open(url, timeout=2.5) as response:
+            return response.status == 200
     except Exception:
         return False
+
+
+def _tcp_port_free(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def _check_ports(required: dict[int, str]) -> None:
+    """Fail fast instead of retrying a portal that can never bind.
+
+    Runs before --fresh wipes anything, so a second launch cannot delete the
+    data directory of a demo that is still running.
+    """
+    busy = [(port, what) for port, what in required.items() if not _tcp_port_free(port)]
+    if not busy:
+        return
+    lines = [f"  port {port} is already in use ({what})" for port, what in busy]
+    hint = ""
+    if PORTAL_PORT in required and _http_ok(f"http://127.0.0.1:{PORTAL_PORT}/health"):
+        hint = ("\n  A DCDNS demo already answers on the portal port.\n"
+                "  Stop it with Ctrl+C in its window, then run this command again.")
+    raise SystemExit(
+        "\nCannot start: another process is holding a required port.\n"
+        + "\n".join(lines) + "\n" + hint
+    )
 
 
 def main() -> int:
@@ -158,6 +197,20 @@ def main() -> int:
     parser.add_argument("--no-supervisor", action="store_true",
                         help="do not restart crashed children (useful for failure demos)")
     args = parser.parse_args()
+
+    # Show progress as it happens even when stdout is piped (python run_demo.py | tee ...).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
+
+    required = {port: f"{node_id} API" for node_id, port in NODE_PORTS.items()}
+    if not args.no_portal:
+        required[PORTAL_PORT] = "portal"
+    if not args.no_dns:
+        required[DNS_METRICS_PORT] = "quorum metrics"
+    _check_ports(required)
 
     if args.fresh and DATA.exists():
         shutil.rmtree(DATA)
@@ -294,7 +347,7 @@ def main() -> int:
                     portal_down_since = None
                 else:
                     portal_down_since = portal_down_since or time.monotonic()
-                    if time.monotonic() - portal_down_since > 8:
+                    if time.monotonic() - portal_down_since > 15:
                         print("!! portal stopped answering; restarting")
                         try:
                             processes["portal"].terminate()

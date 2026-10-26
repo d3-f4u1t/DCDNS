@@ -16,8 +16,8 @@ state machine (`dcdns/state.py`) implements and the test suite verifies.
 3. Ownership and permission changes are authenticated and auditable.
 4. The registry survives the loss of any single node without losing committed
    state or the ability to accept writes.
-5. Committed state can be published into standard DNS and observed by ordinary
-   clients.
+5. Committed state is served as standard DNS by every registry node, and clients
+   accept an answer only when a majority of nodes agrees.
 
 ## 2. Non-goals
 
@@ -229,6 +229,11 @@ Guarantees provided: **majority durability**, **total order of accepted
 operations**, **convergence after reconnection**, **continued writes while one
 of three nodes is down**, **write refusal without a majority**.
 
+For DNS, every node serves the committed state it holds. A lagging follower may
+answer from a slightly older revision; the quorum resolver exposes this by
+requiring agreement and by reporting each node's revision. A majority of
+agreeing answers is required for a client answer; no majority means `SERVFAIL`.
+
 Not provided: Byzantine tolerance, cross-datacenter latency bounds, automatic
 membership changes.
 
@@ -253,17 +258,42 @@ entries.
 
 ## 10. DNS boundary
 
-The registry is authoritative for state; DNS is a publication channel.
+The registry is authoritative for state. DNS is served independently by every
+registry node from that node's committed state, and a client-facing resolver
+requires majority agreement. There is no separate publisher and no central DNS
+front-end.
 
-* The publisher polls committed state and builds a zone containing only domains
-  that are `active` inside `active` namespaces.
-* Answers carry a 30-second TTL. A revoked name therefore remains in resolver
-  caches for at most the TTL after withdrawal.
-* The front-end answers `A` and `ANY` queries, returns `NXDOMAIN` for unknown
-  names, and `NOTIMP` for unsupported types.
-* Publication lag is observable: `published_revision` is compared with the
-  cluster revision on the dashboard, and end-to-end propagation is measured in
-  the evaluation suite.
+**Publication rule.** A name is present in a node's DNS snapshot when the domain
+is not `revoked` and its governing namespace is `active`. Therefore:
+
+* `active` domains are published;
+* `pending_transfer` domains are published with their frozen records, so a
+  handover does not cause downtime;
+* revoked domains are absent;
+* all domains in a revoked namespace are absent.
+
+**Per-node responder.** Each node runs a UDP responder on its own port
+(`5354`, `5355`, `5356` in the demo). It answers `A` and `ANY` queries, sets the
+authoritative-answer bit, uses a 30-second TTL, returns `NXDOMAIN` for unknown
+names, and returns `NOTIMP` for unsupported types.
+
+**Quorum resolver.** The resolver on UDP `5353` forwards the same query to every
+configured node, reduces each response to its semantic content (RCODE plus sorted
+answer records), and returns an answer only if at least a majority agrees (2 of 3
+in the demo). Otherwise it returns `SERVFAIL`. It ignores transaction IDs,
+harmless flags, TTL differences and record order. It has no zone and no keys, so
+it cannot invent an answer.
+
+**Failure semantics.** One node down: the remaining two agree and the resolver
+answers. One node lying: the honest two outvote it. Two nodes down or three
+different answers: `SERVFAIL`. Two colluding nodes can produce a majority lie;
+this is the documented boundary of majority trust, because DNSSEC is not
+implemented.
+
+**Observability.** Each node reports its DNS revision and zone size. The resolver
+reports `published_revision` (the lowest revision among reachable nodes), query
+counts, `NXDOMAIN`, `SERVFAIL`, disagreements and per-node votes. End-to-end
+propagation is measured in the evaluation suite.
 
 ---
 
@@ -304,3 +334,7 @@ each is covered by an automated check:
 8. Revocation removes the name from DNS.
 9. A record update appears in DNS within the measured window.
 10. Writes survive one node failure and stop without a majority.
+11. A pending-transfer name keeps resolving from its frozen record.
+12. One lying DNS node cannot change the majority answer.
+13. Without a DNS majority, the resolver returns `SERVFAIL` rather than trusting
+    one node.

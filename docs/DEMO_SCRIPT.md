@@ -16,14 +16,15 @@ Wait for the `READY` banner. Then, in a second terminal:
 
 ```powershell
 python -m pytest tests/ -q
-nslookup -port=5353 techfest.cs.test 127.0.0.1
+python -m dcdns.dig techfest.cs.test --all
 ```
 
 If both work, you are ready. Leave the demo terminal running.
 
 **Opening line:** *"This is a registry for campus DNS names. Three nodes
-replicate it, signatures decide who may change what, and committed records are
-published into a real DNS server."*
+replicate it, signatures decide who may change what, every node serves DNS from
+its own committed state, and a client accepts an answer only when a majority
+agrees."*
 
 ---
 
@@ -36,13 +37,14 @@ Open **http://127.0.0.1:8000**.
 Point at:
 
 * three nodes, all at the **same revision**;
-* one **leader**, two followers;
+* one **coordinator** (called the leader in the code), two followers;
 * **quorum available**;
 * **audit chain verified**;
-* DNS **in sync**, published revision equal to committed revision.
+* three **per-node DNS authorities** on ports 5354–5356;
+* the **quorum resolver** on 5353, with its required votes and recent queries.
 
-> "The nodes agree on the state. The dashboard polls live — this is not a
-> screenshot."
+> "The nodes agree on the state, and each node answers DNS from the state it has
+> committed. The dashboard polls live — this is not a screenshot."
 
 ### 2. Register a name — 60 s
 
@@ -55,23 +57,26 @@ Go to **Domains**. Acting as *Alice Rivera*.
 Then in the terminal:
 
 ```powershell
-nslookup -port=5353 myproject.cs.test 127.0.0.1
+python -m dcdns.dig myproject.cs.test --all
 ```
 
+Expected: the quorum answer and all three nodes return `10.20.5.50`.
+
 > "Alice is a member of the CS namespace, so the registry accepts her
-> signature. Within about half a second the name is live in DNS."
+> signature. Each node applies the committed operation and refreshes its DNS
+> snapshot; the resolver sees a majority within a fraction of a second."
 
 ### 3. Update and observe propagation — 45 s
 
 Open the domain, change the address to `10.20.5.51`, submit, then query again.
 
 ```powershell
-nslookup -port=5353 myproject.cs.test 127.0.0.1
+python -m dcdns.dig myproject.cs.test --all
 ```
 
-> "The registry committed the change; the publisher picked it up; DNS now
-> answers the new address. The measured delay is around 0.4 seconds and it is
-> shown on the dashboard."
+> "The registry committed the change. There is no publisher polling loop: each
+> node refreshes its snapshot on commit. The quorum resolver now returns the new
+> address, and the dashboard shows the revision and recent votes."
 
 ### 4. Attack it — 60 s
 
@@ -84,7 +89,26 @@ Switch **Acting as** to *Mallory (unaffiliated attacker)*. Open
 Optional: try to register `x.cs.test` as *Library Administration* → also
 `UNAUTHORIZED`.
 
-### 5. Run the experiments — 60 s
+### 5. Lying DNS node — 60 s
+
+Go to **Experiments** and run *Majority DNS resists a lying node*. It makes n3
+return a forged address, queries n3 directly and through the quorum resolver,
+then clears the override.
+
+> "n3 is lying: it returns the forged address. The resolver still returns the
+> honest answer because n1 and n2 agree. One liar is outvoted. Two colluding
+> nodes could lie — that is the honest majority boundary, because we do not have
+> DNSSEC."
+
+Manual version:
+
+```powershell
+python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/chaos', json={'name':'techfest.cs.test','address':'10.20.5.66'}, timeout=3).json())"
+python -m dcdns.dig techfest.cs.test --all
+python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/chaos', json={'clear':True}, timeout=3).json())"
+```
+
+### 6. Run the experiments — 60 s
 
 Go to **Experiments** and run three or four, ideally:
 
@@ -98,33 +122,27 @@ Each shows PASS and the observed behaviour.
 > "These are real signed operations against the running cluster, not canned
 > results. The same code generates the report."
 
-### 6. Audit — 30 s
+### 7. Audit — 30 s
 
 Go to **Audit**.
 
 > "Every accepted operation is hash-chained. Changing any historical record
 > breaks every later hash — that is what the verification badge checks."
 
-### 7. Closing — 30 s
+### 8. Closing — 30 s
 
 > "So: authority is delegated top-down, ownership is proven cryptographically,
-> state is majority-replicated, and the DNS layer only ever publishes committed
-> records. The limitations — a root trust anchor, no Byzantine tolerance, no key
+> state is majority-replicated, every node serves DNS, and the client answer is
+> decided by majority agreement. The limitations — a root trust anchor, no
+> Byzantine tolerance, two colluding DNS nodes can lie, no DNSSEC, no key
 > recovery — are documented rather than hidden."
 
 ---
 
 ## If you have ten minutes: show failure handling
 
-In a third terminal, stop the leader:
-
-```powershell
-# find the leader URL on the dashboard, e.g. n1 = 9101
-Get-Process python | Where-Object { $_.Id -eq <PID> } | Stop-Process
-```
-
-Easier: press `Ctrl+C` is not granular, so use the smoke test instead, which
-does this properly and prints a pass/fail table:
+In a third terminal, stop the coordinator. Easier than hunting for the PID: use
+the smoke test, which does this properly and prints a pass/fail table.
 
 ```powershell
 # stop the demo first, then:
@@ -137,12 +155,23 @@ It demonstrates, in order:
 2. a forged update is rejected;
 3. a follower is killed — writes still commit (2 of 3);
 4. the follower rejoins — it catches up;
-5. the leader is killed — a new leader takes over and commits;
-6. the old leader rejoins — it catches up;
+5. the coordinator is killed — a new coordinator takes over and commits;
+6. the old coordinator rejoins — it catches up;
 7. two nodes are killed — writes are refused.
 
-> "Losing one node costs nothing. Losing the majority stops writes rather than
-> risking divergence."
+For the DNS half of the failure story, start the demo with `--no-supervisor`, then
+kill two node processes. Query the name:
+
+```powershell
+python -m dcdns.dig techfest.cs.test --all
+```
+
+> "The surviving node still answers if you query it directly, but the resolver
+> returns SERVFAIL because it requires 2 of 3 configured nodes. We prefer no
+> answer to trusting one node."
+
+> "Losing one node costs nothing. Losing the majority stops writes and stops
+> majority DNS rather than risking divergence."
 
 ---
 
@@ -161,16 +190,28 @@ It demonstrates, in order:
 > logs are always prefixes and no truncation is needed. The trade-off is no
 > Byzantine tolerance, which I state explicitly."
 
+**"Why is there still a leader? Isn't that centralization?"**
+> "It is a temporary write coordinator, elected as the lowest-id node among the
+> reachable majority. It has no extra signing key and cannot change a record
+> without a valid signature. It can be killed and replaced. A single writer is
+> needed to order unique-name and ownership operations. DNS has no leader at
+> all: every node answers and the client compares."
+
 **"What if the root key is compromised?"**
 > "Then delegation is compromised — that is the trust anchor. It cannot forge an
 > owner's signature, so record-level forgery would still appear in the audit log
 > as a root-signed operation. Mitigation is 2-of-3 root signatures, specified in
 > the threat model but not implemented."
 
+**"What if one DNS node lies?"**
+> "The other two outvote it. The resolver compares RCODE plus answer records and
+> requires two matching answers. If two nodes collude, they can lie; DNSSEC is
+> the future work that would give cryptographic proof instead of majority trust."
+
 **"How do you know it works?"**
-> "43 tests, 9 cluster failure checks, 10 live experiments. All reproducible with
-> three commands, and the results file is generated by the same code the demo
-> buttons call."
+> "54 tests, 9 cluster failure checks, 14 portal flow checks and 11 live
+> experiments. All reproducible with four commands, and the results file is
+> generated by the same code the demo buttons call."
 
 ---
 
@@ -180,9 +221,10 @@ It demonstrates, in order:
 |---|---|
 | Port already in use | `Get-Process python \| Stop-Process -Force`, then rerun |
 | Portal shows "no quorum" | Wait 3 s; if it persists, `run_demo.py --fresh` |
-| DNS returns nothing | Check `http://127.0.0.1:5380/metrics`; the front-end may still be starting |
+| DNS returns nothing | Check `http://127.0.0.1:5380/metrics`; the node responders or resolver may still be starting |
 | Stale data | `--fresh` wipes `data/live` and reseeds |
-| `nslookup` ignores `-port` | Use `nslookup -port=5353 name 127.0.0.1` exactly, or run `python -c "from dcdns.experiments import Resolver; print(Resolver('127.0.0.1',5353).query('techfest.cs.test'))"` |
+| `nslookup` ignores `-port` | Windows `nslookup` has no port option; use `python -m dcdns.dig name --all` |
+| Quorum experiment says chaos disabled | Start the demo without `--no-dns`; `run_demo.py` enables `--chaos` by default |
 
-Logs are in `data/live/logs/` (`n1.log`, `n2.log`, `n3.log`, `dns.log`,
+Logs are in `data/live/logs/` (`n1.log`, `n2.log`, `n3.log`, `quorum.log`,
 `portal.log`).

@@ -1,7 +1,8 @@
 # Threat Model
 
 Scope: the registry prototype as implemented in this repository, deployed as
-three nodes on one machine with a lab DNS front-end.
+three nodes on one machine. Each node also runs a lab DNS responder, and clients
+query a quorum resolver that requires 2 of 3 nodes to agree.
 
 ---
 
@@ -26,9 +27,11 @@ three nodes on one machine with a lab DNS front-end.
 | Network attacker | Can drop, delay or reorder packets between nodes |
 | Node operator (honest-but-curious) | Can read local state and logs |
 | Crashed node | Stops responding; may restart with stale state |
+| Lying DNS node | Returns a forged answer while still participating in replication |
 
-**Out of scope:** a node that actively lies while participating in consensus
-(Byzantine), a compromised root key, and physical access to the host.
+**Out of scope:** a node that actively lies while participating in registry
+consensus (Byzantine), two colluding DNS nodes, a compromised root key, and
+physical access to the host.
 
 ---
 
@@ -105,11 +108,34 @@ that diverge are detectable by comparing revisions and chain heads.
 
 ### T11 — Stale DNS data after revocation
 *Attack/fault:* a revoked name keeps resolving.
-*Mitigation:* the publisher only includes active domains in active namespaces.
-Withdrawal is observed within the polling interval plus the 30 s TTL.
-*Residual:* resolver caches may serve the old answer until the TTL expires. This
-is inherent to DNS, not a defect, and is measured rather than hidden.
+*Mitigation:* every node's DNS snapshot excludes revoked domains and names in
+revoked namespaces. The snapshot refreshes on commit, so withdrawal is observed
+as soon as the revocation commits on that node.
+*Residual:* resolver caches may serve the old answer until the 30-second TTL
+expires. This is inherent to DNS, not a defect, and is measured rather than
+hidden.
 *Test:* experiment *Revocation removes the name from DNS*.
+
+### T12 — Lying DNS node
+*Attack:* one registry node returns a forged `A` record while continuing to
+participate in replication.
+*Mitigation:* the client-facing quorum resolver queries all three node responders
+and returns an answer only when at least two nodes return semantically identical
+results. One liar is outvoted and the disagreement is recorded in metrics.
+*Residual:* two colluding nodes can form a lying majority. DNSSEC or signed zone
+snapshots are not implemented, so the resolver cannot prove an answer
+cryptographically.
+*Test:* experiment *Majority DNS resists a lying node*, plus
+`tests/test_quorum_resolver.py`.
+
+### T13 — DNS availability without a majority
+*Attack/fault:* two nodes are down and only one responder is reachable.
+*Mitigation:* the resolver requires 2 of 3 configured nodes and returns
+`SERVFAIL` rather than trusting the single survivor. This prefers no answer over
+a potentially compromised one.
+*Residual:* clients cannot resolve while no majority is available. This is a
+deliberate availability trade-off.
+*Test:* `tests/test_quorum_resolver.py` single-node `SERVFAIL` cases.
 
 ---
 
@@ -120,8 +146,8 @@ is inherent to DNS, not a defect, and is measured rather than hidden.
   ---------                     --------------                  -------
   any client  --signed op-->  [ verify signature ]  -->  state machine
   any client  --signed op-->  [ namespace policy ]  -->  state machine
-  follower    --append RPC->  [ leader identity  ]  -->  log
-  DNS client  --query------>  [ zone from committed state ] --> answer
+  follower    --append RPC->  [ term / log rules ]  -->  replicated log
+  DNS client  --query------>  [ 2-of-3 semantic agreement ] --> answer or SERVFAIL
 ```
 
 The registry never trusts the transport. A node that receives an operation
@@ -137,11 +163,13 @@ verifies it itself; it does not rely on the forwarding node having done so.
 | Unauthenticated internal RPC | High if exposed | `/internal/*` is bound to loopback only; production requires mutual TLS between nodes |
 | Owner key loss (no recovery) | High | Documented; break-glass policy specified, not built |
 | Byzantine node | High | Out of scope; explicitly not claimed |
+| Two colluding DNS nodes | High | Majority trust boundary; DNSSEC/signed zones not built |
 | Portal holds private keys | High in production | Demo-only; documented in the UI |
 | Nonce table grows unbounded | Low | Acceptable at prototype scale |
 | Log never compacted | Low | Acceptable at prototype scale |
 | `.test` only, no public delegation | Low | Deliberate isolation |
 | DNS cache holds revoked records for TTL | Low | Measured, inherent to DNS |
+| DNS unavailable without a majority | Medium | Deliberate: `SERVFAIL` instead of trusting one node |
 
 ---
 
@@ -149,6 +177,8 @@ verifies it itself; it does not rely on the forwarding node having done so.
 
 * That the system eliminates central authority. The root authority remains.
 * That it resists a malicious registry node.
+* That two colluding DNS nodes cannot lie.
+* That DNS answers are cryptographically signed. DNSSEC is not implemented.
 * That it is a production PKI. Key enrolment and recovery are specified, not
   implemented.
 * That every client can resolve these names. Only clients pointed at the lab

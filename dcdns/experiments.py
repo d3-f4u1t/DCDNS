@@ -83,13 +83,13 @@ EXPERIMENTS = [
     {
         "id": "revocation",
         "title": "Revocation removes the name from DNS",
-        "description": "The owner revokes a domain and the DNS front-end is observed until it stops answering.",
+        "description": "The owner revokes a domain and the quorum resolver is observed until the name stops resolving.",
         "expectation": "the name stops resolving within the propagation window",
     },
     {
         "id": "dns_propagation",
         "title": "DNS propagation latency",
-        "description": "An A record is updated and the authoritative server is polled until the new address appears.",
+        "description": "An A record is updated and the quorum resolver is polled until the new address appears.",
         "expectation": "the new answer is served within a few seconds",
     },
     {
@@ -112,7 +112,7 @@ class Result:
 
 
 class Resolver:
-    """Tiny UDP DNS client used to observe the authoritative front-end."""
+    """Tiny UDP DNS client used to observe the quorum resolver and individual nodes."""
 
     def __init__(self, host: str, port: int, timeout: float = 1.0) -> None:
         self.host = host

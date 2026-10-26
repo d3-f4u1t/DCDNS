@@ -195,7 +195,7 @@ def create_app(
     # dashboard
     # ------------------------------------------------------------------ #
     @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request) -> HTMLResponse:
+    def dashboard(request: Request) -> HTMLResponse:
         data = snapshot()
         return TEMPLATES.TemplateResponse(
             request=request,
@@ -204,7 +204,7 @@ def create_app(
         )
 
     @app.get("/partials/status", response_class=HTMLResponse)
-    async def status_partial(request: Request) -> HTMLResponse:
+    def status_partial(request: Request) -> HTMLResponse:
         data = snapshot()
         return TEMPLATES.TemplateResponse(
             request=request,
@@ -213,7 +213,17 @@ def create_app(
         )
 
     @app.get("/health")
-    async def health() -> JSONResponse:
+    def health() -> JSONResponse:
+        """Liveness probe: the portal process is accepting requests.
+
+        This deliberately does not call the cluster. A busy dashboard request
+        must not make the supervisor believe the portal has died.
+        """
+        return JSONResponse({"ok": True, "service": "portal"})
+
+    @app.get("/ready")
+    def ready() -> JSONResponse:
+        """Readiness probe: the portal can read committed cluster state."""
         try:
             state = client.consistent_state()
             return JSONResponse({"ok": True, "revision": state.get("revision", 0)})
@@ -224,7 +234,7 @@ def create_app(
     # domains
     # ------------------------------------------------------------------ #
     @app.get("/domains", response_class=HTMLResponse)
-    async def domain_list(request: Request, q: str = "") -> HTMLResponse:
+    def domain_list(request: Request, q: str = "") -> HTMLResponse:
         try:
             payload = client.get("/domains")
             domains = payload.get("domains", [])
@@ -241,7 +251,7 @@ def create_app(
         )
 
     @app.post("/domains/register")
-    async def register_domain(
+    def register_domain(
         request: Request,
         name: str = Form(...),
         address: str = Form(...),
@@ -254,7 +264,7 @@ def create_app(
         return redirect(target, ok=message) if ok else redirect("/domains", err=message, code=code)
 
     @app.get("/domains/{name}", response_class=HTMLResponse)
-    async def domain_detail(request: Request, name: str) -> HTMLResponse:
+    def domain_detail(request: Request, name: str) -> HTMLResponse:
         try:
             payload = client.get(f"/domains/{name}")
         except Exception:
@@ -289,7 +299,7 @@ def create_app(
         )
 
     @app.post("/domains/{name}/records")
-    async def update_records(
+    def update_records(
         request: Request, name: str, address: str = Form(...)
     ) -> RedirectResponse:
         actor = current_identity(request)["name"]
@@ -301,7 +311,7 @@ def create_app(
         )
 
     @app.post("/domains/{name}/transfer")
-    async def transfer(request: Request, name: str, new_owner: str = Form(...)) -> RedirectResponse:
+    def transfer(request: Request, name: str, new_owner: str = Form(...)) -> RedirectResponse:
         actor = current_identity(request)["name"]
         ok, message, code = submit(
             actor, "transfer_initiate", {"name": name, "new_owner": new_owner}
@@ -311,7 +321,7 @@ def create_app(
         )
 
     @app.post("/domains/{name}/transfer/accept")
-    async def transfer_accept(request: Request, name: str) -> RedirectResponse:
+    def transfer_accept(request: Request, name: str) -> RedirectResponse:
         actor = current_identity(request)["name"]
         ok, message, code = submit(actor, "transfer_accept", {"name": name})
         return redirect(f"/domains/{name}", ok=message) if ok else redirect(
@@ -319,7 +329,7 @@ def create_app(
         )
 
     @app.post("/domains/{name}/transfer/cancel")
-    async def transfer_cancel(request: Request, name: str) -> RedirectResponse:
+    def transfer_cancel(request: Request, name: str) -> RedirectResponse:
         actor = current_identity(request)["name"]
         ok, message, code = submit(actor, "transfer_cancel", {"name": name})
         return redirect(f"/domains/{name}", ok=message) if ok else redirect(
@@ -327,7 +337,7 @@ def create_app(
         )
 
     @app.post("/domains/{name}/revoke")
-    async def revoke(request: Request, name: str, reason: str = Form("")) -> RedirectResponse:
+    def revoke(request: Request, name: str, reason: str = Form("")) -> RedirectResponse:
         actor = current_identity(request)["name"]
         ok, message, code = submit(actor, "revoke_domain", {"name": name, "reason": reason})
         return redirect(f"/domains/{name}", ok=message) if ok else redirect(
@@ -338,7 +348,7 @@ def create_app(
     # namespaces
     # ------------------------------------------------------------------ #
     @app.get("/namespaces", response_class=HTMLResponse)
-    async def namespace_list(request: Request) -> HTMLResponse:
+    def namespace_list(request: Request) -> HTMLResponse:
         try:
             namespaces = client.get("/namespaces").get("namespaces", [])
         except Exception:
@@ -351,7 +361,7 @@ def create_app(
         )
 
     @app.post("/namespaces/delegate")
-    async def delegate(request: Request, name: str = Form(...),
+    def delegate(request: Request, name: str = Form(...),
                        controller: str = Form(...)) -> RedirectResponse:
         actor = current_identity(request)["name"]
         ok, message, code = submit(
@@ -362,7 +372,7 @@ def create_app(
         )
 
     @app.post("/namespaces/grant")
-    async def grant(request: Request, namespace: str = Form(...),
+    def grant(request: Request, namespace: str = Form(...),
                     member: str = Form(...)) -> RedirectResponse:
         actor = current_identity(request)["name"]
         ok, message, code = submit(
@@ -376,7 +386,7 @@ def create_app(
     # audit
     # ------------------------------------------------------------------ #
     @app.get("/audit", response_class=HTMLResponse)
-    async def audit_page(request: Request) -> HTMLResponse:
+    def audit_page(request: Request) -> HTMLResponse:
         try:
             payload = client.get("/audit", limit=200)
             records = payload.get("audit", [])
@@ -394,7 +404,7 @@ def create_app(
     # experiments
     # ------------------------------------------------------------------ #
     @app.get("/experiments", response_class=HTMLResponse)
-    async def experiments_page(request: Request) -> HTMLResponse:
+    def experiments_page(request: Request) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(
             request=request,
             name="experiments.html",
@@ -403,7 +413,7 @@ def create_app(
         )
 
     @app.post("/experiments/{experiment_id}")
-    async def run_experiment(request: Request, experiment_id: str) -> RedirectResponse:
+    def run_experiment(request: Request, experiment_id: str) -> RedirectResponse:
         runner = ExperimentRunner(client, keys, resolver)
         result = runner.run(experiment_id).as_dict()
         EXPERIMENT_RESULTS[experiment_id] = result
@@ -416,7 +426,7 @@ def create_app(
     # identities
     # ------------------------------------------------------------------ #
     @app.get("/identities", response_class=HTMLResponse)
-    async def identities_page(request: Request) -> HTMLResponse:
+    def identities_page(request: Request) -> HTMLResponse:
         return TEMPLATES.TemplateResponse(
             request=request,
             name="identities.html",
@@ -424,7 +434,7 @@ def create_app(
         )
 
     @app.post("/identity")
-    async def select_identity(request: Request, identity: str = Form(...)) -> RedirectResponse:
+    def select_identity(request: Request, identity: str = Form(...)) -> RedirectResponse:
         response = redirect(request.headers.get("referer", "/"))
         response.set_cookie("dcdns_identity", identity, httponly=True, samesite="lax")
         return response

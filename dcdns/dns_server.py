@@ -1,35 +1,24 @@
-"""Authoritative DNS front-end for the registry.
+"""DNS wire format and query engine.
 
-This is a real DNS server: it parses and emits the wire format defined by
-RFC 1035, so an ordinary resolver (`nslookup`, `dig`, a browser's resolver) can
-query it directly. It does not read the registry database; it only ever serves
-records from a *committed* registry revision that it has polled from the
-cluster. Names are published only when:
+This is a real DNS implementation: it parses and emits the RFC 1035 wire
+format, so an ordinary resolver (`dig`, a stub resolver, a test client) can
+query it. It contains **no server loop and no publication loop**. Each registry
+node embeds a :class:`DNSEngine` inside ``NodeDNSResponder`` and feeds it that
+node's own committed zone snapshot. A client-facing quorum resolver asks all
+nodes and requires a majority of semantically identical answers.
 
-  * the domain is ``active``, and
-  * the namespace that governs it is also ``active``.
-
-A name that is revoked therefore stops resolving, and the delay between a
-committed update and the new answer is measurable (that is the DNS propagation
-metric in the evaluation report).
-
-Two protocols are exposed:
-  * UDP/5353 (default) - DNS
-  * TCP/5380        - JSON metrics for the dashboard
+The publication rule is decided by the registry state
+(``state.snapshot_for_dns``), not here: a name is published when the domain is
+not revoked and its governing namespace is active. A ``pending_transfer`` name
+keeps resolving from its frozen record.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import socket
 import struct
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-
-from .client import ClusterClient
 
 DNS_TTL = 30
 TYPE_A = 1
@@ -95,16 +84,14 @@ def encode_answer(name: str, address: str) -> bytes:
 
 
 class DNSEngine:
-    """Stateless-ish query engine over a published zone snapshot."""
+    """Stateless-ish query engine over one node's committed zone snapshot."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.zone: dict[str, str] = {}
         self.published_revision = 0
         self.source = "-"
-        self.last_publish_at = 0.0
         self.published_at_monotonic = time.monotonic()
-        self.last_poll_monotonic = time.monotonic()
         self.queries = 0
         self.answered = 0
         self.nxdomain = 0
@@ -119,8 +106,6 @@ class DNSEngine:
                 self.published_revision = revision
                 self.published_at_monotonic = time.monotonic()
             self.source = source
-            self.last_publish_at = time.time()
-            self.last_poll_monotonic = time.monotonic()
 
     # -- query handling --------------------------------------------------- #
     def handle(self, data: bytes) -> bytes | None:
@@ -195,160 +180,14 @@ class DNSEngine:
             zone = dict(self.zone)
             revision = self.published_revision
             age = time.monotonic() - self.published_at_monotonic
-            since_poll = time.monotonic() - self.last_poll_monotonic
         return {
             "published_revision": revision,
             "zone_size": len(zone),
             "zone": zone,
             "source": self.source,
             "seconds_since_publish": round(age, 3),
-            "seconds_since_poll": round(since_poll, 3),
-            "poll_interval_seconds": POLL_INTERVAL,
             "queries": self.queries,
             "answered": self.answered,
             "nxdomain": self.nxdomain,
             "recent": self.recent[-15:],
         }
-
-
-# --------------------------------------------------------------------------- #
-# zone publication loop
-# --------------------------------------------------------------------------- #
-POLL_INTERVAL = 0.4
-
-
-class Publisher(threading.Thread):
-    def __init__(self, engine: DNSEngine, urls: list[str], zone_path: Path | None):
-        super().__init__(daemon=True)
-        self.engine = engine
-        self.client = ClusterClient(urls, timeout=2.0)
-        self.zone_path = zone_path
-        self.last_revision: int | None = None
-        self.errors = 0
-        self.stop_event = threading.Event()
-
-    def run(self) -> None:
-        while not self.stop_event.is_set():
-            try:
-                state = self.client.consistent_state()
-                zone: dict[str, str] = {}
-                for name, domain in state.get("domains", {}).items():
-                    if domain.get("status") != "active":
-                        continue
-                    address = domain.get("records", {}).get("A")
-                    if not address:
-                        continue
-                    if not self._namespace_active(state, domain.get("namespace")):
-                        continue
-                    zone[name] = address
-                revision = int(state.get("revision", 0))
-                self.engine.publish(zone, revision, state.get("_source", "-"))
-                if self.zone_path and revision != self.last_revision:
-                    self._write_zone(zone, revision)
-                self.last_revision = revision
-                self.errors = 0
-            except Exception:
-                self.errors += 1
-            self.stop_event.wait(POLL_INTERVAL)
-
-    @staticmethod
-    def _namespace_active(state: dict, namespace: str | None) -> bool:
-        if not namespace:
-            return False
-        ns = state.get("namespaces", {}).get(namespace)
-        return bool(ns and ns.get("status") == "active")
-
-    def _write_zone(self, zone: dict[str, str], revision: int) -> None:
-        try:
-            lines = [
-                f"; DCDNS published zone - registry revision {revision}",
-                f"; written {time.strftime('%Y-%m-%d %H:%M:%S')}",
-                "",
-            ]
-            for name, address in sorted(zone.items()):
-                lines.append(f"{name}. {DNS_TTL} IN A {address}")
-            self.zone_path.parent.mkdir(parents=True, exist_ok=True)
-            self.zone_path.write_text("\n".join(lines) + "\n", "utf-8")
-        except Exception:
-            pass
-
-
-# --------------------------------------------------------------------------- #
-# servers
-# --------------------------------------------------------------------------- #
-class MetricsHandler(BaseHTTPRequestHandler):
-    engine: DNSEngine
-
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path.split("?")[0] not in ("/metrics", "/zone"):
-            self.send_response(404)
-            self.end_headers()
-            return
-        payload = json.dumps(self.engine.metrics(), indent=2).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def log_message(self, *args) -> None:  # silence per-request logging
-        return
-
-
-def serve_udp(sock: socket.socket, engine: DNSEngine, stop: threading.Event) -> None:
-    sock.settimeout(1.0)
-    while not stop.is_set():
-        try:
-            data, addr = sock.recvfrom(2048)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-        response = engine.handle(data)
-        if response:
-            try:
-                sock.sendto(response, addr)
-            except OSError:
-                pass
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="DCDNS authoritative DNS front-end")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5353)
-    parser.add_argument("--metrics-port", type=int, default=5380)
-    parser.add_argument("--nodes", default="http://127.0.0.1:9101,http://127.0.0.1:9102,http://127.0.0.1:9103")
-    parser.add_argument("--zone-file", default="data/zone.txt")
-    args = parser.parse_args()
-
-    engine = DNSEngine()
-    publisher = Publisher(engine, [u.strip() for u in args.nodes.split(",")],
-                          Path(args.zone_file))
-    publisher.start()
-
-    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    udp.bind((args.host, args.port))
-
-    metrics = ThreadingHTTPServer((args.host, args.metrics_port), MetricsHandler)
-    MetricsHandler.engine = engine
-    metrics.daemon_threads = True
-    threading.Thread(target=metrics.serve_forever, daemon=True).start()
-
-    print(f"DNS      listening on udp://{args.host}:{args.port}")
-    print(f"metrics  listening on http://{args.host}:{args.metrics_port}/metrics")
-    stop = threading.Event()
-    try:
-        serve_udp(udp, engine, stop)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        stop.set()
-        publisher.stop_event.set()
-        udp.close()
-        metrics.shutdown()
-
-
-if __name__ == "__main__":
-    main()

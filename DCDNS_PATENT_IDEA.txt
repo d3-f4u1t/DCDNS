@@ -1,0 +1,941 @@
+================================================================================
+DCDNS - PATENT-STYLE INVENTION DISCLOSURE
+================================================================================
+Candidate patent idea for a college project submission
+
+Project: DCDNS - Decentralized Campus Domain Registry
+Prepared: 25 October 2026
+Location: C:\Users\hkpan\DCDNS
+
+IMPORTANT NOTICE
+----------------
+This is a technical invention disclosure, not legal advice. It is written to
+help you explain a specific, potentially patentable improvement to your college.
+Before filing anything, do three things:
+
+1. Check your college's student IP policy. The college may own the work.
+2. Ask your college's IP cell or a patent attorney for a prior-art search.
+3. Do not publish or demo the specific invention publicly until you understand
+   the novelty rules in your country. Many countries have no grace period.
+
+A broad claim like "decentralized DNS" is very likely to fail. A narrow claim
+about a specific mechanism has a better chance. This document focuses on one
+such mechanism.
+
+
+================================================================================
+PART 0 - THE ONE-PAGE VERSION
+================================================================================
+
+TITLE
+  Freshness-Coherent Quorum Resolution for DNS Answers from Replicated
+  Authoritative Nodes
+
+SHORT NAME
+  Revision-Aware Majority DNS (RAM-DNS)
+
+THE PROBLEM
+  In DCDNS, every registry node is an authoritative DNS server and answers from
+  its own committed registry revision. A client resolver asks all nodes and
+  returns an answer when a majority agrees.
+
+  Majority agreement on the answer text does not guarantee freshness.
+
+  Example:
+    - Revision 10 says techfest.cs.test -> 10.20.5.42
+    - Revision 11 says techfest.cs.test -> 10.20.5.99
+    - n1 and n2 are still at revision 10.
+    - n3 is at revision 11.
+
+  The resolver receives two votes for 10.20.5.42 and one vote for 10.20.5.99.
+  It returns the stale 10.20.5.42, even though the registry has already
+  committed the new address. This is a real correctness gap, not a performance
+  issue.
+
+THE INVENTION
+  Attach the node's committed revision to each DNS answer, and make the resolver
+  require both:
+    (a) a majority agreement on the semantic DNS answer, and
+    (b) a freshness condition relative to the highest committed revision
+        observed in the system.
+
+  If the majority answer is stale, the resolver retries for a bounded time. If
+  the nodes do not converge, it returns SERVFAIL (or a deliberately marked
+  stale answer) instead of silently serving old data.
+
+WHY IT IS DIFFERENT
+  - DNSSEC proves that an answer was signed; it does not compare replicas or
+    prove that the answer is the latest committed one.
+  - Primary/secondary DNS and anycast provide redundancy, not answer voting.
+  - Distributed databases use quorum reads with version numbers, but they do
+    not operate on DNS wire responses or DNS semantic answer groups.
+  - Blockchain DNS systems (Namecoin, Handshake, ENS) consensus on ownership,
+    not per-query freshness across independently committed authoritative nodes.
+  - The existing DCDNS prototype does semantic majority voting, but not
+    revision-coherent freshness. The freshness condition is the new part.
+
+BEST CLAIM TYPE
+  A method claim performed by a DNS resolver, plus a system claim covering the
+  resolver and the replicated authoritative nodes.
+
+WHY YOUR COLLEGE MIGHT LIKE IT
+  - It solves a clear, demonstrable failure.
+  - It is narrow and technical, not a business method.
+  - It can be implemented and measured in the existing project.
+  - It has a strong demo: two lagging nodes agree on an old address; the new
+    resolver refuses the stale majority and returns the correct result after
+    convergence.
+
+STATUS
+  The current DCDNS prototype provides the platform and the semantic majority
+  resolver. The freshness condition, revision metadata, retry policy and
+  stale-majority experiment still need to be implemented to support the
+  disclosure.
+
+
+================================================================================
+PART 1 - WHY THE CURRENT PROJECT IS NOT ENOUGH
+================================================================================
+
+The current DCDNS quorum resolver does this:
+
+  1. Send the same DNS query to n1, n2 and n3.
+  2. Normalize each response to (RCODE, sorted answer records).
+  3. Group identical normalized answers.
+  4. Return a group only if it has at least 2 of 3 votes.
+  5. Otherwise return SERVFAIL.
+
+This handles:
+  - one node down,
+  - one node lying,
+  - two nodes disagreeing,
+  - no majority.
+
+It does not handle:
+  - two nodes being stale but consistent,
+  - a majority of lagging replicas outvoting a current replica,
+  - a resolver returning an old address after a committed update,
+  - a client being unable to tell "current answer" from "old but popular answer".
+
+This is the gap the patent idea fills.
+
+Concrete failure scenario:
+
+  Time 1: registry revision 10
+    n1: techfest.cs.test -> 10.20.5.42   revision 10
+    n2: techfest.cs.test -> 10.20.5.42   revision 10
+    n3: techfest.cs.test -> 10.20.5.42   revision 10
+
+  Time 2: owner updates the address; revision 11 commits on n3 first
+    n1: techfest.cs.test -> 10.20.5.42   revision 10  (lagging)
+    n2: techfest.cs.test -> 10.20.5.42   revision 10  (lagging)
+    n3: techfest.cs.test -> 10.20.5.99   revision 11  (current)
+
+  Resolver result with current design:
+    2 votes for 10.20.5.42, 1 vote for 10.20.5.99
+    -> returns 10.20.5.42  (STALE)
+
+  Resolver result with the invention:
+    majority answer = 10.20.5.42
+    highest observed revision = 11
+    majority group has no node at revision 11
+    -> freshness condition fails
+    -> retry briefly, then SERVFAIL or a marked stale answer
+    -> never silently present the old address as current
+
+This is the kind of specific technical problem a patent examiner can understand.
+
+
+================================================================================
+PART 2 - THE PROPOSED INVENTION IN DETAIL
+================================================================================
+
+2.1 System components
+---------------------
+A. Replicated registry
+   Multiple registry nodes commit an ordered log of signed operations. Each
+   committed operation advances a monotonically increasing revision number.
+
+B. Per-node DNS responder
+   Each registry node runs an authoritative DNS responder. It answers from a
+   flat zone snapshot built from that node's committed state. The snapshot is
+   associated with the node's current committed revision.
+
+C. Revision metadata channel
+   Each DNS response is associated with the revision used to produce it. Three
+   possible embodiments:
+
+   Embodiment 1: EDNS(0) option
+     The responder adds a custom EDNS(0) option to the DNS response. The option
+     carries the node identifier and the committed revision. This keeps the
+     answer and the revision in one packet.
+
+   Embodiment 2: side-channel status query
+     The resolver queries each node's HTTP status endpoint for its revision and
+     associates the revision with the DNS answer. This is easier to prototype
+     but adds a second request.
+
+   Embodiment 3: signed revision token
+     The responder returns a signed token binding the answer hash, the revision
+     and the node identity. The resolver verifies the token before counting the
+     vote. This is stronger but requires key management.
+
+D. Quorum resolver
+   The resolver sends the query to all configured nodes, collects answers and
+   revision metadata, normalizes the answers, groups them, and applies both the
+   majority condition and the freshness condition.
+
+E. Freshness watermark
+   A revision value representing the best known committed state. Examples:
+     - the maximum revision among reachable nodes;
+     - the revision confirmed by a quorum of registry status endpoints;
+     - a revision supplied by a trusted registry coordinator;
+     - a client-supplied minimum revision for read-your-writes.
+
+F. Policy engine
+   Configuration for:
+     - quorum size (2 of 3 in the demo);
+     - maximum allowed lag (delta);
+     - retry budget and backoff;
+     - behavior on stale majority: SERVFAIL, retry, or marked stale answer;
+     - whether NXDOMAIN answers are subject to the same freshness rule.
+
+2.2 Method steps
+----------------
+Step 1. Each node maintains a committed revision R_i and a DNS snapshot Z_i
+        derived from that revision.
+
+Step 2. A client sends a DNS query Q for a name N and type T to the resolver.
+
+Step 3. The resolver sends Q to each node i in a configured set S.
+
+Step 4. Each node i returns:
+        - a DNS response A_i (RCODE plus answer records), and
+        - a revision identifier R_i associated with the snapshot used.
+
+Step 5. The resolver normalizes each A_i into a canonical semantic form:
+        - the RCODE;
+        - the answer record type, class and RDATA;
+        - records sorted canonically;
+        - transaction ID excluded;
+        - TTL excluded or normalized;
+        - harmless flags excluded.
+
+Step 6. The resolver groups nodes by identical canonical answer.
+
+Step 7. The resolver identifies a candidate majority group M where
+        |M| >= quorum.
+
+Step 8. The resolver computes a freshness watermark W:
+        - W = max(R_i) over reachable nodes, or
+        - W = a quorum-confirmed revision, or
+        - W = a client-requested minimum revision.
+
+Step 9. The resolver evaluates a freshness condition F:
+        - F1: at least one node in M has R_i >= W; or
+        - F2: at least a quorum of M has R_i >= W - delta; or
+        - F3: the minimum revision in M is >= W - delta.
+
+Step 10. If M exists and F is true, return the majority answer to the client,
+         restoring the client's transaction ID and applying the resolver's TTL
+         policy.
+
+Step 11. If M exists but F is false, the resolver may:
+         - retry the query for a bounded time;
+         - query only the lagging nodes to encourage convergence;
+         - return SERVFAIL;
+         - return the answer with an explicit stale marker if the policy allows.
+
+Step 12. If no M exists, return SERVFAIL as in the current design.
+
+Step 13. Record metrics: watermark, per-node revision, majority group, stale
+         majority count, retries, final decision.
+
+2.3 Pseudocode
+--------------
+    def resolve(qname, qtype):
+        deadline = now() + retry_budget
+        while now() < deadline:
+            responses = query_all_nodes(qname, qtype)
+            groups = group_by_canonical_answer(responses)
+            majority = first_group_with_at_least(groups, quorum)
+            if majority is None:
+                return SERVFAIL
+            watermark = max(r.revision for r in responses if r.reachable)
+            if freshness_ok(majority, watermark, delta, policy):
+                return build_response(majority, client_txid)
+            sleep(backoff)
+        return SERVFAIL  # or marked stale answer
+
+    def freshness_ok(group, watermark, delta, policy):
+        if policy == "any-current":
+            return any(r.revision >= watermark for r in group)
+        if policy == "quorum-within-delta":
+            return count(r.revision >= watermark - delta for r in group) >= quorum
+        if policy == "all-within-delta":
+            return all(r.revision >= watermark - delta for r in group)
+        return False
+
+2.4 Why the freshness condition is not trivial
+----------------------------------------------
+A naive implementation could simply compare revisions and always return the
+highest-revision answer. That has three problems:
+
+1. The highest-revision node might be the liar. Revision is not a proof of
+   correctness; it only says how much of the log the node has applied.
+2. A single node could claim a fake high revision. The resolver must bind the
+   revision to the node's committed state, ideally with a signature or a
+   quorum-confirmed watermark.
+3. Requiring all nodes to be at the same revision destroys availability during
+   normal replication lag.
+
+The invention therefore combines majority agreement on content with a
+freshness condition, rather than simply trusting the highest revision. It can
+use a bounded lag delta and a quorum-confirmed watermark. This is the
+non-obvious part to explain.
+
+2.5 Alternative embodiments
+---------------------------
+- The revision is carried in a custom EDNS(0) option.
+- The revision is carried in a companion TXT record or a reserved meta-query.
+- The revision is obtained from a status API.
+- The revision is signed by the node and verified by the resolver.
+- The freshness condition is applied only to positive answers, or to both
+  positive and negative answers.
+- The resolver returns a stale answer with a short TTL and a warning flag when
+  availability is more important than freshness.
+- The resolver uses a client-supplied minimum revision to provide
+  read-your-writes semantics after a registry update.
+- The resolver maintains a per-node lag ledger and temporarily removes a
+  persistently lagging node from the quorum calculation.
+- The method is applied to A, AAAA, CNAME, MX, TXT and other record types.
+- The method is applied to a permissioned registry, a consortium registry, or
+  a public replicated DNS registry.
+- The resolver is embedded in a stub resolver, a recursive resolver, or a
+  client library.
+
+
+================================================================================
+PART 3 - DRAFT CLAIMS
+================================================================================
+
+These are drafting aids, not attorney-approved claims. A patent attorney will
+rewrite them.
+
+3.1 Independent method claim
+----------------------------
+1. A computer-implemented method for resolving domain names in a replicated
+   domain-name system, the method comprising:
+
+   maintaining, at each of a plurality of authoritative domain-name servers, a
+   domain-name zone snapshot derived from a committed revision of a replicated
+   registry, wherein each zone snapshot is associated with a revision
+   identifier;
+
+   receiving, at a resolver, a domain-name query from a client;
+
+   transmitting the query to each of the plurality of authoritative
+   domain-name servers;
+
+   receiving, from each of the plurality of authoritative domain-name servers,
+   a domain-name response and the revision identifier associated with the zone
+   snapshot used to generate the domain-name response;
+
+   normalizing each domain-name response into a canonical semantic
+   representation comprising a response code and a set of resource records,
+   wherein the normalization excludes at least one of a transaction identifier,
+   a time-to-live value, and an ordering of resource records;
+
+   identifying a majority group of the authoritative domain-name servers whose
+   normalized domain-name responses are identical, the majority group
+   satisfying a quorum threshold;
+
+   determining a freshness watermark from the revision identifiers;
+
+   determining that the majority group satisfies a freshness condition
+   relative to the freshness watermark;
+
+   in response to the majority group satisfying the quorum threshold and the
+   freshness condition, returning the normalized domain-name response of the
+   majority group to the client; and
+
+   in response to the majority group failing the freshness condition, at least
+   one of retrying the query and returning a server-failure response to the
+   client.
+
+3.2 Dependent method claims
+---------------------------
+2. The method of claim 1, wherein the revision identifier is carried in an
+   EDNS(0) option of the domain-name response.
+
+3. The method of claim 1, wherein the revision identifier is obtained from a
+   status endpoint separate from the domain-name response.
+
+4. The method of claim 1, wherein the freshness watermark is a maximum revision
+   identifier among reachable authoritative domain-name servers.
+
+5. The method of claim 1, wherein the freshness watermark is a revision
+   identifier confirmed by a quorum of registry status endpoints.
+
+6. The method of claim 1, wherein the freshness condition requires that at
+   least one server in the majority group has a revision identifier greater
+   than or equal to the freshness watermark.
+
+7. The method of claim 1, wherein the freshness condition requires that at
+   least a quorum of servers in the majority group have revision identifiers
+   within a predetermined lag bound of the freshness watermark.
+
+8. The method of claim 1, wherein the quorum threshold is floor(N/2) + 1 for N
+   authoritative domain-name servers.
+
+9. The method of claim 8, wherein N is three and the quorum threshold is two.
+
+10. The method of claim 1, further comprising, in response to the majority
+    group failing the freshness condition, retrying the query for a bounded
+    time with a backoff interval before returning the server-failure response.
+
+11. The method of claim 1, further comprising returning the majority response
+    with a stale-answer indicator and a reduced time-to-live when a policy
+    permits stale answers.
+
+12. The method of claim 1, wherein the domain-name response comprises a
+    negative response, and the freshness condition is applied to the negative
+    response.
+
+13. The method of claim 1, further comprising maintaining a per-server
+    disagreement ledger and excluding a server from the quorum threshold after
+    a plurality of stale or disagreeing responses.
+
+14. The method of claim 1, wherein the revision identifier is cryptographically
+    signed by the authoritative domain-name server and verified by the
+    resolver.
+
+15. The method of claim 1, wherein the zone snapshot includes a domain name in
+    a pending ownership-transfer state, and the domain name continues to
+    resolve from a frozen record during the pending ownership transfer.
+
+3.3 Independent system claim
+----------------------------
+16. A system comprising:
+
+    a plurality of authoritative domain-name servers, each configured to
+    maintain a domain-name zone snapshot derived from a committed revision of a
+    replicated registry and to return a domain-name response together with a
+    revision identifier associated with the zone snapshot; and
+
+    a resolver configured to:
+
+      transmit a domain-name query to each of the plurality of authoritative
+      domain-name servers;
+
+      receive the domain-name responses and revision identifiers;
+
+      normalize each domain-name response into a canonical semantic
+      representation;
+
+      identify a majority group of authoritative domain-name servers whose
+      normalized responses are identical and satisfy a quorum threshold;
+
+      determine a freshness watermark from the revision identifiers;
+
+      determine whether the majority group satisfies a freshness condition
+      relative to the freshness watermark; and
+
+      return the majority response only when both the quorum threshold and the
+      freshness condition are satisfied.
+
+3.4 Computer-readable medium claim
+----------------------------------
+17. A non-transitory computer-readable medium storing instructions that, when
+    executed by one or more processors, cause the one or more processors to
+    perform the method of claim 1.
+
+3.5 Claim strategy notes
+------------------------
+- The independent claim should stay narrow enough to avoid the broad prior art
+  on decentralized DNS and blockchain name services.
+- The novelty is the combination of semantic DNS answer grouping, revision
+  metadata and a freshness condition.
+- Do not claim "a blockchain" or "a decentralized registry" in the independent
+  claim. Those words invite prior-art rejections.
+- Claim the resolver behavior, because the resolver is a single entity that
+  performs all the steps. This helps with enforcement and clarity.
+- Add dependent claims for EDNS(0), signed revisions, bounded lag, SERVFAIL and
+  the stale-answer flag.
+- Avoid claiming a mathematical formula by itself. Tie every step to DNS
+  packets, revisions and a concrete resolver action.
+
+
+================================================================================
+PART 4 - PRIOR ART AND DIFFERENTIATION
+================================================================================
+
+This is not a complete prior-art search. It is a starting map.
+
+4.1 DNS redundancy
+------------------
+Primary/secondary authoritative servers and anycast provide availability. A
+resolver normally trusts one authoritative response. They do not compare
+multiple answers and do not apply a majority vote.
+
+Difference: the invention actively compares semantic answers from multiple
+authoritative replicas and requires a quorum.
+
+4.2 DNSSEC
+----------
+DNSSEC signs zone data so a resolver can verify authenticity and integrity. It
+does not prove that a particular replica has applied the latest registry
+revision, and it does not compare replicas.
+
+Difference: the invention adds revision-aware freshness across replicas. It can
+be combined with DNSSEC, but it is not DNSSEC.
+
+4.3 Distributed database quorum reads
+-------------------------------------
+Cassandra, etcd, ZooKeeper and Raft-style systems use quorums and version
+numbers. A quorum read can return a value with a version, and a client can
+require a minimum version.
+
+Difference: those systems operate on database keys and internal RPC, not on DNS
+wire responses. The invention defines a DNS-specific semantic normalization,
+majority grouping, and resolver behavior including SERVFAIL and stale-answer
+policy.
+
+4.4 Blockchain DNS
+------------------
+Namecoin, Handshake, ENS and patents such as US11558344B1 describe decentralized
+name ownership and resolution using blockchains or smart contracts. They focus
+on ownership, registries and resolver smart contracts.
+
+Difference: the invention is not a blockchain and does not claim decentralized
+name ownership. It claims a freshness-aware quorum decision over DNS answers
+from replicated authoritative nodes. It can be used with a permissioned
+registry, a consortium registry, or even a non-blockchain replicated database.
+
+4.5 Multi-resolver / measurement systems
+----------------------------------------
+Researchers and operators sometimes query multiple resolvers to measure DNS
+consistency. Those systems observe differences; they generally do not return a
+majority answer to a client with a freshness condition and a SERVFAIL fallback.
+
+Difference: the invention is an inline resolution method, not a measurement
+tool.
+
+4.6 The current DCDNS prototype
+-------------------------------
+The prototype already implements:
+  - per-node authoritative DNS,
+  - semantic majority agreement,
+  - one-liar outvoting,
+  - SERVFAIL without a majority.
+
+It does not implement:
+  - revision metadata in DNS responses,
+  - a freshness watermark,
+  - a freshness condition,
+  - stale-majority detection,
+  - bounded retry on staleness.
+
+The invention is the delta, not the whole prototype. That is important: it gives
+you a specific improvement to claim.
+
+4.7 Search terms for a real prior-art search
+--------------------------------------------
+Use these with Google Patents, Google Scholar, IEEE Xplore, ACM Digital Library
+and arXiv:
+
+  - "quorum DNS"
+  - "majority voting DNS resolver"
+  - "revision-aware DNS"
+  - "freshness-aware DNS resolution"
+  - "stale DNS replica"
+  - "multi-authoritative DNS consistency"
+  - "DNS answer agreement"
+  - "quorum read DNS"
+  - "replicated authoritative DNS"
+  - "DNS registry revision"
+  - "EDNS0 revision option"
+  - "consistency-aware DNS"
+  - "Byzantine DNS resolver"
+  - "blockchain DNS patent"
+  - "decentralized domain name patent"
+
+Look for:
+  - US11558344B1 (blockchain domains)
+  - Namecoin and Handshake papers
+  - ENS documentation
+  - DNSSEC RFCs
+  - any patent by a DNS vendor on "multi-resolver consistency"
+  - academic work on "DNS cache consistency" and "authoritative server consistency"
+
+
+================================================================================
+PART 5 - EXPERIMENTAL VALIDATION PLAN
+================================================================================
+
+A patent disclosure is stronger when it includes measured evidence. The current
+project already has the test harness; add one experiment.
+
+5.1 Experiment name
+-------------------
+  stale_majority
+
+5.2 Setup
+---------
+  - Start three registry nodes with DNS responders.
+  - Register stale-test.cs.test -> 10.20.5.10.
+  - Pause n1 and n2 (or block their replication) so they stay at revision R.
+  - Submit an update through n3 to 10.20.5.20, committing revision R+1.
+  - Confirm:
+      n1, n2: old address, revision R
+      n3: new address, revision R+1
+
+5.3 Baseline (current resolver)
+-------------------------------
+  Query the quorum resolver.
+  Expected: it returns 10.20.5.10 because n1 and n2 agree.
+  This demonstrates the stale-majority failure.
+
+5.4 Invention (freshness-aware resolver)
+----------------------------------------
+  Query the freshness-aware resolver.
+  Expected: it detects that the majority group has no node at the watermark
+  revision R+1, retries, and then returns SERVFAIL (or a marked stale answer)
+  until n1 and n2 catch up.
+
+5.5 Recovery
+------------
+  Allow n1 and n2 to catch up.
+  Query again.
+  Expected: all three nodes return 10.20.5.20 at revision R+1, and the resolver
+  returns the new address.
+
+5.6 Metrics to report
+---------------------
+  - stale-majority detection rate (should be 100% in the experiment),
+  - added latency when all nodes are current (target: small),
+  - added latency when one node lags (target: bounded by retry budget),
+  - availability when one node lags (should remain high),
+  - behavior when two nodes lag (SERVFAIL or stale marker),
+  - false SERVFAIL rate under normal replication lag,
+  - comparison with the baseline resolver.
+
+5.7 Additional tests
+--------------------
+  - one lying node with a high fake revision: the freshness condition must not
+    blindly trust the highest revision;
+  - one lying node with a low revision: majority still wins;
+  - two colluding nodes: documented majority-trust boundary;
+  - NXDOMAIN freshness;
+  - pending-transfer name with a frozen record;
+  - signed revision token tampering;
+  - resolver restart and watermark recovery.
+
+5.8 Demo script for the college
+-------------------------------
+  1. Show the normal case: all three nodes agree and the resolver answers.
+  2. Pause two nodes; update through the third.
+  3. Show the current resolver returning the old address (the failure).
+  4. Enable freshness-aware mode; show SERVFAIL instead of the stale answer.
+  5. Let the nodes catch up; show the new address.
+  6. Show the metrics: stale majority detected, retries, final decision.
+
+This demo is much more convincing than "we built a decentralized DNS."
+
+
+================================================================================
+PART 6 - IMPLEMENTATION PLAN FOR THE EXISTING CODE
+================================================================================
+
+This is optional, but it makes the disclosure much stronger.
+
+6.1 Add revision metadata to DNS responses
+------------------------------------------
+File: dcdns/dns_server.py
+  - Extend the response encoder to add an EDNS(0) OPT record with a custom
+    option carrying the node revision.
+  - Keep the existing A/ANY answer behavior.
+  - Add a parser for the option in the resolver.
+
+File: dcdns/dns_node.py
+  - Pass the node's committed revision into the engine with each snapshot.
+  - The engine already receives a revision; expose it in the response.
+
+6.2 Extend the quorum resolver
+------------------------------
+File: dcdns/quorum_resolver.py
+  - Parse the revision option from each response.
+  - Track the watermark from the existing status poll (it already polls node
+    revisions).
+  - Add a freshness policy: off, any-current, quorum-within-delta,
+    all-within-delta.
+  - Add retry with a small budget and backoff.
+  - Add metrics: stale_majority, freshness_retries, watermark, lag per node.
+  - Add a CLI flag: --freshness any-current / --max-lag 0 / etc.
+
+6.3 Add the experiment
+----------------------
+File: dcdns/experiments.py
+  - Add a `stale_majority` experiment.
+  - Use the existing chaos/status APIs or a test-only pause endpoint to hold two
+    nodes at an old revision.
+  - Compare baseline and freshness-aware behavior.
+  - Clean up in a finally block.
+
+6.4 Add tests
+-------------
+File: tests/test_quorum_resolver.py
+  - majority + fresh -> answer
+  - majority + stale -> SERVFAIL
+  - majority + one current node -> answer
+  - no majority -> SERVFAIL
+  - malformed revision option -> vote ignored or SERVFAIL
+  - signed revision tampering -> rejected
+  - NXDOMAIN freshness
+  - pending-transfer frozen record
+
+6.5 Update the portal
+---------------------
+  - Show watermark, per-node lag, stale-majority count and freshness policy.
+  - Add a "stale majority" experiment button.
+  - Show the decision: "majority answer accepted / rejected as stale."
+
+6.6 Update the guide and docs
+-----------------------------
+  - Add a section "Freshness-aware majority DNS."
+  - Add the failure example and the new experiment.
+  - Update the limitations: "majority agreement is not a freshness proof;
+    freshness-aware mode closes that gap."
+
+
+================================================================================
+PART 7 - BACKUP IDEAS (IF THE COLLEGE WANTS OPTIONS)
+================================================================================
+
+7.1 Backup idea A: Disagreement-ledger quarantine
+--------------------------------------------------
+Problem: A lying or persistently lagging node remains in the quorum set and can
+cause repeated disagreements.
+
+Idea: The resolver maintains a per-node ledger of semantic disagreements. A
+node is quarantined only when a quorum of other nodes agree against it over a
+window. Quarantined votes are excluded from the quorum until the node recovers
+or an operator clears it.
+
+Strength: moderate.
+Weakness: reputation systems are well known; prior art risk is higher; a
+malicious node could try to frame an honest node.
+
+7.2 Backup idea B: DNS continuity during authenticated ownership transfer
+-------------------------------------------------------------------------
+Problem: A domain transfer can cause downtime or record tampering.
+
+Idea: The registry enters a pending-transfer state, freezes the record, and
+continues to publish the frozen record to DNS. On acceptance, ownership changes
+without withdrawing the name. On cancellation, the old owner resumes. On
+revocation, the name is withdrawn.
+
+Strength: easy to implement and demo.
+Weakness: domain-transfer locks and EPP transfer semantics are known; likely
+obvious. Weaker patent candidate.
+
+7.3 Backup idea C: Signed quorum certificates for DNS answers
+-------------------------------------------------------------
+Problem: A client cannot cryptographically prove that a DNS answer was produced
+by a majority of committed replicas.
+
+Idea: Each DNS response carries a signed statement binding the answer hash, the
+registry revision and the node identity. The resolver combines a quorum of
+signatures into a quorum certificate and returns it with the answer. A client
+can verify the certificate offline.
+
+Strength: technically strong and auditable.
+Weakness: more complex; overlaps with DNSSEC, transparency logs and quorum
+certificates; needs careful claim drafting.
+
+7.4 Recommendation
+------------------
+Use Backup idea A only if the college wants a security/reputation angle.
+Use Backup idea B only if the college wants a simple, easy-to-explain idea.
+Use the main idea (revision-aware majority DNS) for a strong systems/patent
+submission. It has the best balance of novelty, demonstrability and relevance to
+the existing project.
+
+
+================================================================================
+PART 8 - WHAT TO SUBMIT TO THE COLLEGE
+================================================================================
+
+If the college asks for a short "patent idea" note, submit this structure:
+
+1. Title
+   Freshness-Coherent Quorum Resolution for DNS Answers from Replicated
+   Authoritative Nodes
+
+2. Problem
+   Majority agreement on DNS answers can select a stale answer when a majority
+   of replicas lag behind the latest committed registry revision.
+
+3. Proposed solution
+   Attach a committed revision to each DNS answer; require both semantic
+   majority agreement and a freshness condition relative to a revision
+   watermark; retry or return SERVFAIL when the majority is stale.
+
+4. Novel features
+   - revision metadata in DNS responses,
+   - semantic answer grouping,
+   - freshness watermark,
+   - freshness condition with bounded lag,
+   - stale-majority fallback,
+   - optional signed revision and quarantine.
+
+5. Advantages
+   - prevents stale-majority misdirection,
+   - preserves availability under normal lag,
+   - gives explicit failure instead of silent staleness,
+   - works with the existing three-node prototype,
+   - measurable and demonstrable.
+
+6. Prior art
+   - DNSSEC: authenticity, not replica freshness.
+   - Primary/secondary DNS and anycast: redundancy, not voting.
+   - Quorum reads in distributed databases: database keys, not DNS answers.
+   - Blockchain DNS: ownership consensus, not per-query freshness.
+   - Current DCDNS: semantic majority, no revision coherence.
+
+7. Prototype evidence
+   - existing 54 tests, 9 cluster checks, 14 portal checks, 11 experiments;
+   - new stale-majority experiment to be added;
+   - metrics for detection, latency and availability.
+
+8. Claims
+   - one independent method claim,
+   - dependent claims for EDNS(0), watermark, bounded lag, SERVFAIL, signed
+     revision, quarantine and pending-transfer records.
+
+9. Figures
+   - Figure 1: three nodes, revisions 10/10/11, stale majority.
+   - Figure 2: resolver flow with majority and freshness checks.
+   - Figure 3: timeline of update, stale majority, retry, convergence.
+
+10. Status
+   - platform implemented;
+   - freshness extension proposed and ready to implement;
+   - prior-art search and legal review pending.
+
+
+================================================================================
+PART 9 - FIGURES TO DRAW
+================================================================================
+
+Figure 1 - Stale majority
+-------------------------
+  Client
+    |
+    v
+  Resolver
+   /  |  \
+  v   v   v
+ n1  n2  n3
+ rev10 rev10 rev11
+ .42   .42   .99
+  \   /
+   majority .42  <-- stale
+
+Figure 2 - Freshness-aware flow
+-------------------------------
+  Query all nodes
+        |
+  Normalize answers
+        |
+  Majority group? -- no --> SERVFAIL
+        |
+       yes
+        |
+  Compute watermark W = max revision
+        |
+  Majority fresh? -- no --> retry, then SERVFAIL / stale flag
+        |
+       yes
+        |
+  Return majority answer
+
+Figure 3 - Timeline
+-------------------
+  t0: rev10, all nodes .42
+  t1: rev11 commits on n3, .99
+  t2: resolver sees 2x .42 (rev10), 1x .99 (rev11)
+  t3: freshness check fails
+  t4: n1/n2 catch up to rev11
+  t5: resolver sees 3x .99 (rev11), returns .99
+
+
+================================================================================
+PART 10 - HONEST LIMITATIONS OF THE IDEA
+================================================================================
+
+Be ready to say these before the examiner or your college does:
+
+1. Revision is not proof of correctness.
+   A malicious node can claim a high revision. The basic idea must use a
+   quorum-confirmed watermark or signed revision tokens. The dependent claims
+   cover this.
+
+2. Freshness has a cost.
+   Requiring the latest revision can reduce availability during normal lag. The
+   bounded-lag delta and the stale-answer policy are the trade-off controls.
+
+3. The resolver is still a trust point.
+   It compares answers, but a compromised resolver can lie. The method improves
+   consistency, not resolver trust. A signed quorum certificate would address
+   that.
+
+4. Two colluding nodes can still lie.
+   Majority trust is the boundary. The invention reduces stale-majority and
+   single-liar problems; it does not provide Byzantine consensus.
+
+5. Prior art is crowded.
+   Decentralized DNS, blockchain name services, DNSSEC, quorum systems and
+   multi-resolver measurement all exist. A real prior-art search is mandatory.
+
+6. Public disclosure can hurt.
+   A demo, paper, GitHub push or college poster may count as disclosure. Check
+   the rules before publishing the specific mechanism.
+
+7. The college may own the IP.
+   Check the student IP policy and the project's funding/employment terms.
+
+
+================================================================================
+PART 11 - WHAT I RECOMMEND YOU DO NEXT
+================================================================================
+
+1. Ask your college what exactly they need:
+   - a one-page idea,
+   - an invention disclosure,
+   - a prior-art report,
+   - a provisional patent draft,
+   - a poster or presentation.
+
+2. Submit the one-page version in Part 0 first. It is clear and specific.
+
+3. Ask for a prior-art search using the terms in Part 4.7. Do not rely on this
+   document as a legal search.
+
+4. If they like it, implement the stale-majority experiment. A working demo is
+   the strongest evidence.
+
+5. Talk to your college's IP cell or a patent attorney before any public
+   disclosure. Ask specifically:
+   - "Is this novel over DNSSEC, anycast, quorum reads and blockchain DNS?"
+   - "Is the freshness condition obvious to a skilled engineer?"
+   - "What is the broadest claim we can support?"
+   - "Who owns the IP?"
+
+6. If the college only wants a "patent idea" for a grade, the main idea plus
+   the one-page summary is enough. If they want a real filing, get professional
+   help.
+
+================================================================================
+END OF DISCLOSURE
+================================================================================

@@ -47,38 +47,56 @@ transport-agnostic: it takes an operation and returns a result, with no I/O.
 
 ---
 
-## ADR-2 — DNS: purpose-built authoritative front-end, not the CoreDNS etcd plugin
+## ADR-2 — DNS: per-node authoritative service with client-side majority agreement
 
 **Context.** CoreDNS ships an `etcd` plugin that serves SkyDNS-formatted keys
-directly. That is the shortest path from a key-value store to working DNS.
+directly, and a single central DNS front-end is the simplest way to publish a
+replicated registry. Both leave DNS trust in one place: either the key-value
+store's contents are served verbatim, or one publisher/front-end process decides
+what clients see.
 
-**Decision.** Implement a small authoritative server (`dns_server.py`) that
-speaks the RFC 1035 wire format, fed by a publisher that polls committed state.
+**Decision.** Implement a small DNS wire engine (`dns_server.py`), run an
+authoritative responder inside every registry node (`dns_node.py`), and put a
+client-facing majority resolver (`quorum_resolver.py`) in front of the node set.
+Each node serves its own committed DNS snapshot. The resolver asks all
+configured nodes and returns an answer only when at least 2 of 3 agree.
 
 **Why.**
 
-* **Publication semantics.** The plugin serves whatever key exists at a path. It
-  has no concept of `pending_transfer` or `revoked`, so a retained-but-revoked
-  key would still answer. The registry needs a publication rule, not a key
-  lookup.
+* **No central DNS trust.** A single publisher or front-end is a single point of
+  failure and a single point of lies. With per-node serving, the client answer is
+  decided by majority agreement over independent committed states.
+* **Publication semantics.** The CoreDNS plugin serves whatever key exists at a
+  path. It has no concept of `pending_transfer` or `revoked`, so a
+  retained-but-revoked key would still answer. The registry needs a publication
+  rule, not a key lookup. DCDNS publishes every non-revoked domain in an active
+  namespace; a pending transfer keeps its frozen record live.
 * **Schema coupling.** Using the plugin would make the internal key layout a
   public interface, constraining how records are versioned and audited.
-* **Measurability.** A publisher that records `published_revision` lets us
-  report propagation lag precisely. The plugin offers no such hook.
-* **Independence.** The DNS layer consumes *committed state over HTTP*, so it
-  works identically regardless of how the cluster is implemented.
+* **Measurability.** Each node reports its DNS revision and zone size, and the
+  resolver records per-node votes, disagreements and `SERVFAIL` counts. This
+  makes both convergence and lying-node behaviour observable.
+* **Independence.** Each responder reads a flat snapshot built from that node's
+  committed state, so it works regardless of how replication is implemented.
 
 **Consequences.**
 
 * We implement name parsing and response encoding ourselves (~200 lines) and
   must get compression pointers and RCODEs right. This is covered by wire-level
   tests.
-* No DNSSEC, no zone transfers, no recursive resolution, no `AAAA`/`TXT`.
-* The server is authoritative for one zone and one record type.
+* The quorum resolver is one process in the demo. It has no zone and no keys, so
+  it cannot invent an answer, but clients pointed at it depend on it being up.
+  Multiple resolvers can be run; in production the comparison would be
+  replicated or built into stub resolvers.
+* **Majority trust is the boundary.** One lying node is outvoted; two colluding
+  nodes can lie. There is no DNSSEC, so answers are not cryptographically signed.
+* No zone transfers, no recursive resolution, no `AAAA`/`TXT`.
+* Each node is authoritative for one zone and one record type.
 
-**Production path.** Keep the publisher contract (`committed state → zone`) and
-swap the sink: render a zone file for BIND/CoreDNS, or push through RFC 2136
-dynamic updates. The publisher, not the DNS engine, is the reusable part.
+**Production path.** Sign zone snapshots (DNSSEC or an equivalent signed-zone
+scheme) so a resolver can verify rather than merely outvote. Keep the per-node
+responder and majority comparison, and optionally render a zone file for
+BIND/CoreDNS or push through RFC 2136 dynamic updates at each node.
 
 ---
 
@@ -149,8 +167,9 @@ a real public name. `.local` was rejected because it triggers multicast DNS
 behaviour; `.campus` is not a delegated TLD and would require inventing a root.
 
 **Consequences.** Clients must be pointed at the lab resolver explicitly
-(`nslookup -port=5353 ... 127.0.0.1`). A real deployment would use a subdomain
-of a university-owned zone and integrate with existing DNS/DHCP.
+(`python -m dcdns.dig name --all`, or `dig @127.0.0.1 -p 5353 name`). A real
+deployment would use a subdomain of a university-owned zone and integrate with
+existing DNS/DHCP.
 
 ---
 
@@ -160,9 +179,11 @@ of a university-owned zone and integrate with existing DNS/DHCP.
 crypto.py     pure functions: keys, canonical bytes, signatures
 names.py      pure functions: syntax and record policy
 state.py      pure state machine: apply(operation) -> result | error
-cluster.py    I/O and ordering only; calls state.apply
-node.py       HTTP surface; no business rules
-dns_server.py publication and wire format; reads committed state only
+cluster.py    I/O and ordering only; calls state.apply; publishes DNS snapshots
+node.py       HTTP surface and DNS responder lifecycle; no business rules
+dns_server.py DNS wire format and query engine; reads a committed snapshot only
+dns_node.py   per-node UDP responder; reads the node's committed snapshot
+quorum_resolver.py  client-side majority comparison; no zone and no keys
 experiments.py shared by portal and CLI so evidence cannot drift
 ```
 
@@ -182,3 +203,5 @@ every node applies it and every test can reach it.
 | No key recovery | Lost owner key means lost domain | 2-of-3 root break-glass, audited |
 | Single record type | Limited DNS usefulness | `AAAA`, `TXT`, `CNAME` with per-type validation |
 | In-memory read path | Reads may be stale on followers | Lease-based linearizable reads |
+| Majority DNS trust | Two colluding nodes can lie | DNSSEC or signed zone snapshots |
+| One resolver process in the demo | Clients pointed at it depend on it | Replicate the resolver or compare in the stub |

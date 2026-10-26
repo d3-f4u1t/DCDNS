@@ -1,4 +1,4 @@
-"""Wire-level tests for the DNS front-end (no network required)."""
+"""Wire-level tests for the DNS engine (no network required)."""
 
 from __future__ import annotations
 
