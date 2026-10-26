@@ -71,6 +71,25 @@ def test_demo_pause_route_calls_the_node_control(tmp_path):
     ]
 
 
+def test_demo_reset_reports_unreachable_nodes(tmp_path):
+    class FailingHTTP:
+        def post(self, url, json, timeout):
+            raise RuntimeError("node unreachable")
+
+    app = make_app(tmp_path, demo_controls=True, http_client=FailingHTTP())
+    with TestClient(app) as client:
+        response = client.post(
+            "/demo/fault/reset",
+            data={"q": "techfest.cs.test"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "err=" in location
+    assert "reset+incomplete" in location or "reset%20incomplete" in location
+
+
 def test_demo_reset_clears_override_and_pause_on_every_node(tmp_path):
     calls = []
     app = make_app(tmp_path, demo_controls=True, http_client=FakeHTTP(calls))

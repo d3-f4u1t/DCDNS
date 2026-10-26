@@ -95,7 +95,7 @@ def create_app(
     async def _clear_demo_faults_on_startup() -> None:
         # A portal restart must not leave a previous presentation's forged
         # answer or paused responder active. This only clears DNS demo faults.
-        clear_faults()
+        clear_faults(ignore_unreachable=True)
 
     # ------------------------------------------------------------------ #
     # helpers
@@ -273,11 +273,13 @@ def create_app(
             )
         return response.json()
 
-    def clear_faults() -> list[str]:
+    def clear_faults(ignore_unreachable: bool = False) -> list[str]:
         """Clear DNS overrides and pause flags on every node.
 
         Called at portal startup and by the reset control. It never touches
-        registry state or the committed log.
+        registry state or the committed log. Startup tolerates nodes that are
+        not up yet; an explicit reset reports every node it could not reach so
+        the UI never claims a fault was cleared when it was not.
         """
         errors: list[str] = []
         for node_id, url in node_apis.items():
@@ -289,10 +291,11 @@ def create_app(
                     response = http.post(f"{url}{path}", json=payload, timeout=1.0)
                     if response.status_code not in (200, 404):
                         errors.append(f"{node_id} {path}: HTTP {response.status_code}")
-                except Exception:
-                    # Nodes may not be up yet when the portal starts. A later
-                    # reset retries; do not make startup fail because of this.
-                    pass
+                except Exception as exc:
+                    if not ignore_unreachable:
+                        errors.append(
+                            f"{node_id} {path}: {type(exc).__name__}: {exc}"
+                        )
         return errors
 
     def redirect(path: str, ok: str | None = None, err: str | None = None,

@@ -116,7 +116,7 @@ works too.
 ## Five ways to run the evidence
 
 ```powershell
-python -m pytest tests/ -q          # 59 unit + wire + majority + console-control tests
+python -m pytest tests/ -q          # 60 unit + wire + majority + console-control tests
 python scripts/cluster_smoke.py     # 9 real failure/recovery checks
 python scripts/portal_flow.py       # 14 end-to-end portal checks (live demo)
 python scripts/evaluate.py          # 11 live security experiments -> docs/EVALUATION_RESULTS.md
@@ -135,7 +135,7 @@ The cluster check starts three real processes, then:
 6. restarts the old leader and watches it catch up;
 7. kills two nodes and verifies writes are refused.
 
-Latest run: **59/59 tests, 9/9 cluster checks, 14/14 portal checks, 11/11 live
+Latest run: **60/60 tests, 9/9 cluster checks, 14/14 portal checks, 11/11 live
 experiments.**
 
 ---
@@ -190,7 +190,7 @@ dcdns/
   bootstrap.py       demo identities
   templates/         Jinja2 pages
   static/            CSS + small progressive-enhancement JS
-tests/               59 tests: state machine, authorization, DNS wire format,
+tests/               60 tests: state machine, authorization, DNS wire format,
                      per-node responder, quorum resolver, console controls
 scripts/
   cluster_smoke.py   3-node failure and recovery checks

@@ -40,7 +40,7 @@ execute identical code.
 See [`EVALUATION_RESULTS.md`](EVALUATION_RESULTS.md) for the generated table from
 the most recent run. Summary at the time of writing:
 
-* **59/59** unit, wire, majority-resolver and console-control tests pass.
+* **60/60** unit, wire, majority-resolver and console-control tests pass.
 * **9/9** cluster checks pass: convergence, forged-write rejection, follower
   loss, follower catch-up, coordinator failover, old-coordinator catch-up,
   quorum loss.

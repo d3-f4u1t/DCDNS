@@ -1819,7 +1819,7 @@ nslookup feature). Use python -m dcdns.dig. On Linux/macOS, dig @127.0.0.1 -p
   python scripts/cluster_smoke.py     Requires the live demo to be stopped.
 
 Latest results:
-  59/59 tests
+  60/60 tests
   9/9 cluster checks
   14/14 portal flow checks
   11/11 live experiments
@@ -1829,12 +1829,12 @@ Latest results:
 19. EVIDENCE: WHAT HAS BEEN PROVEN
 ================================================================================
 
-19.1 Unit and wire tests: 59/59
+19.1 Unit and wire tests: 60/60
 -------------------------------
 - 33 state-machine and authorization tests.
 - 10 DNS wire-format tests.
 - 13 quorum-resolver and per-node responder tests.
-- 3 console-control tests (gating, pause, reset).
+- 4 console-control tests (gating, pause, reset, unreachable reset).
 
 They cover:
   - signature verification and tampering,
@@ -2274,7 +2274,7 @@ departments; every change is signed with Ed25519 and committed by a majority of
 three nodes. Each node also serves DNS from its own committed state, and a client
 resolver accepts an answer only when two of three nodes agree. So there is no
 central DNS server to trust, and one lying node cannot change the answer. It is
-a working prototype with a portal, 59 tests, 9 cluster checks and 11 live
+a working prototype with a portal, 60 tests, 9 cluster checks and 11 live
 experiments."
 
 22.2 Two-minute pitch
@@ -2300,7 +2300,7 @@ one node.
 The honest boundaries: the root trust anchor remains, membership is configured,
 the registry consensus is not Byzantine-fault-tolerant, two colluding DNS nodes
 can lie, and DNSSEC is not implemented. We document those rather than hiding
-them. The evidence is 59 tests, 9 cluster failure checks, 14 portal flow checks
+them. The evidence is 60 tests, 9 cluster failure checks, 14 portal flow checks
 and 11 live experiments, including a lying-node demo."
 
 22.3 Technical two-minute pitch
@@ -2501,7 +2501,7 @@ If you remember nothing else, remember these:
 10. "The root trust anchor remains, membership is configured, consensus is not
     Byzantine-fault-tolerant, and DNSSEC is not implemented."
 
-11. "The evidence is 59 tests, 9 cluster checks, 14 portal checks and 11 live
+11. "The evidence is 60 tests, 9 cluster checks, 14 portal checks and 11 live
     experiments."
 
 12. "The project is about authority and failure semantics, not just storing rows."
@@ -2544,7 +2544,7 @@ Before questions
 ----------------
 [ ] Say the honest boundary before someone asks: permissioned, root anchor,
     not BFT, two colluding DNS nodes can lie, no DNSSEC.
-[ ] Have the numbers ready: 59/59, 9/9, 14/14, 11/11.
+[ ] Have the numbers ready: 60/60, 9/9, 14/14, 11/11.
 [ ] Have the ports ready: 8000 portal, 9101-9103 APIs, 5354-5356 node DNS,
     5353 quorum DNS, 5380 metrics.
 
