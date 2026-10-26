@@ -1,0 +1,117 @@
+<section class="panel probe-panel" id="probe-result">
+  {% if not probe %}
+  <div class="panel-head">
+    <h2>DNS query</h2>
+    <span class="badge muted">no query yet</span>
+  </div>
+  <div class="empty">
+    Enter a name and run a query. The console asks n1, n2 and n3 directly,
+    then asks the resolver for its decision.
+  </div>
+  {% else %}
+  {% set r = probe.resolver %}
+  {% set verdict = 'ok' if r.ok and not r.disagreement else ('warn' if r.ok else 'danger') %}
+  <div class="probe-head">
+    <div>
+      <h2>DNS query</h2>
+      <div class="probe-meta">
+        <span class="mono">{{ probe.name }}</span>
+        <span class="sep">·</span> A
+        <span class="sep">·</span> queried {{ probe.at_display }}
+        <span class="sep">·</span> {{ '%.2f'|format(probe.elapsed_ms) }} ms total
+      </div>
+    </div>
+    <div class="probe-verdict {{ verdict }}">
+      <span class="verdict-code">{{ r.rcode or 'ERROR' }}</span>
+      <span class="verdict-answer mono">{{ r.answer or '—' }}</span>
+    </div>
+  </div>
+
+  <table class="probe-table">
+    <thead>
+      <tr>
+        <th>Target</th>
+        <th>Query source</th>
+        <th>RCODE</th>
+        <th>Answer</th>
+        <th>Rev / votes</th>
+        <th>Latency</th>
+        <th>State</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for node in probe.nodes %}
+      <tr class="{{ 'row-fault' if node.paused or node.overrides else '' }}">
+        <td class="mono">{{ node.node_id }}</td>
+        <td class="source">{{ node.source }}</td>
+        <td class="mono">{{ node.rcode_name }}</td>
+        <td class="mono answer">{{ node.answer or '—' }}</td>
+        <td class="tnum" title="revision source: {{ node.revision_source }}">
+          {{ node.dns_revision if node.dns_revision is not none else '—' }}
+        </td>
+        <td class="tnum">{{ '%.2f'|format(node.latency_ms) }} ms</td>
+        <td>
+          {% if node.paused %}
+            <span class="state danger">DNS paused</span>
+          {% elif node.overrides %}
+            <span class="state danger">override active</span>
+          {% elif node.rcode == -1 %}
+            <span class="state warn">no answer</span>
+          {% elif not node.api_reachable %}
+            <span class="state warn">API unreachable</span>
+          {% else %}
+            <span class="state ok">answered</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      <tr class="resolver-row">
+        <td class="mono">resolver</td>
+        <td class="source">{{ r.source }}</td>
+        <td class="mono">{{ r.rcode or 'ERROR' }}</td>
+        <td class="mono answer">{{ r.answer or '—' }}</td>
+        <td class="tnum">
+          {% if r.responders %}
+            {{ r.votes.values() | reject('equalto', 'no-answer') | list | length }}/{{ r.responders }} answered
+          {% else %}—{% endif %}
+        </td>
+        <td class="tnum">{{ '%.2f'|format(r.latency_ms or 0) }} ms</td>
+        <td>
+          {% if r.ok and r.disagreement %}
+            <span class="state warn">majority accepted; split vote</span>
+          {% elif r.ok %}
+            <span class="state ok">majority accepted</span>
+          {% else %}
+            <span class="state danger">no majority; SERVFAIL</span>
+          {% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="probe-trace">
+    <span class="trace-label">resolver votes</span>
+    {% if r.votes %}
+      {% for node_id, vote in r.votes.items() %}
+        <span class="vote {{ 'vote-winner' if node_id in r.winner else '' }}">
+          {{ node_id }}={{ vote }}
+        </span>
+      {% endfor %}
+      <span class="trace-note">
+        required {{ r.required }} of {{ r.responders }} configured responders
+      </span>
+    {% else %}
+      <span class="muted">no vote map available</span>
+      {% if r.error %}<span class="trace-note">{{ r.error }}</span>{% endif %}
+    {% endif %}
+  </div>
+
+  <p class="source-note">
+    Direct rows are separate UDP queries to each node on udp/5354–5356.
+    The resolver row is a separate decision from <code>/query</code>, which uses
+    the same code path as udp/5353. Revisions come from each node's
+    <code>/status</code>, not from the DNS packet. A direct node answer is not a
+    resolver vote.
+  </p>
+  {% endif %}
+</section>

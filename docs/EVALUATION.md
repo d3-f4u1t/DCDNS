@@ -40,7 +40,7 @@ execute identical code.
 See [`EVALUATION_RESULTS.md`](EVALUATION_RESULTS.md) for the generated table from
 the most recent run. Summary at the time of writing:
 
-* **54/54** unit, wire and majority-resolver tests pass.
+* **59/59** unit, wire, majority-resolver and console-control tests pass.
 * **9/9** cluster checks pass: convergence, forged-write rejection, follower
   loss, follower catch-up, coordinator failover, old-coordinator catch-up,
   quorum loss.
@@ -48,13 +48,13 @@ the most recent run. Summary at the time of writing:
   revoke and DNS withdrawal.
 * **11/11** security experiments pass, including majority DNS against a lying
   node.
-* DNS propagation measured at **0.20 s** after the client response (commit took
-  422 ms in the same run).
-* Revocation withdrawal measured at **0.11 s**.
-* Commit latency observed at **~0.4 s**, dominated by the 0.25 s replication
-  tick rather than by consensus itself.
+* DNS propagation measured at **0.22 s** after the client response (commit took
+  0 ms in the same run).
+* Revocation withdrawal measured at **0.31 s**.
+* Commit latency varied from under 1 ms to ~0.4 s across runs; the slower cases
+  are dominated by the 0.25 s replication tick rather than by consensus itself.
 * Majority-DNS experiment: n3 returned the forged `10.20.5.66`; the quorum
-  resolver returned the honest `10.20.5.124`.
+  resolver returned the honest `10.20.5.123`.
 
 ## 4. Interpretation
 

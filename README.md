@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-=======
-
->>>>>>> 50bbde94f42fda101b354d73d683216c391aa5a0
 # DCDNS — Decentralized Campus Domain Registry
 
 A permissioned registry for campus DNS namespaces. Authorized participants
@@ -34,11 +30,13 @@ pip install -r requirements.txt
 python run_demo.py --fresh
 ```
 
-Then open **http://127.0.0.1:8000**.
+Open **http://127.0.0.1:8000**. The console is the demo: query a name, watch
+each node answer, inject a DNS fault, and recover without touching the registry.
 
 That single command creates the demo identities, starts three registry nodes,
 seeds a small campus, starts each node's DNS responder, starts the quorum
-resolver and starts the portal.
+resolver and starts the portal. It also enables the console's loopback-only DNS
+fault controls; `python run_demo.py --fresh --no-demo-controls` hides them.
 
 To stop: `Ctrl+C`.
 
@@ -115,14 +113,17 @@ works too.
 
 ---
 
-## Four ways to run the evidence
+## Five ways to run the evidence
 
 ```powershell
-python -m pytest tests/ -q          # 54 unit + wire + majority tests
+python -m pytest tests/ -q          # 59 unit + wire + majority + console-control tests
 python scripts/cluster_smoke.py     # 9 real failure/recovery checks
 python scripts/portal_flow.py       # 14 end-to-end portal checks (live demo)
 python scripts/evaluate.py          # 11 live security experiments -> docs/EVALUATION_RESULTS.md
 ```
+
+The fifth is the console itself at **http://127.0.0.1:8000**: every query and
+fault control exercises the running processes, not a canned animation.
 
 The cluster check starts three real processes, then:
 
@@ -134,28 +135,38 @@ The cluster check starts three real processes, then:
 6. restarts the old leader and watches it catch up;
 7. kills two nodes and verifies writes are refused.
 
-Latest run: **54/54 tests, 9/9 cluster checks, 14/14 portal checks, 11/11 live
+Latest run: **59/59 tests, 9/9 cluster checks, 14/14 portal checks, 11/11 live
 experiments.**
 
 ---
 
-## The demo in five minutes
+## The console in three minutes
 
 Full click-by-click script: [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 
-1. **Dashboard** — three nodes, one coordinator, all at the same revision; three
-   per-node DNS authorities and a quorum resolver.
-2. **Domains** — register `myproject.cs.test` as Alice; watch it appear at all
-   three nodes.
-3. **DNS** — `python -m dcdns.dig myproject.cs.test --all` shows the quorum
-   answer and each node's vote.
-4. **Update** — change the address in the portal, query again immediately.
-5. **Attack** — switch to *Mallory* and try to update Alice's domain: rejected
-   with `UNAUTHORIZED`, record unchanged.
-6. **Lying node** — make n3 return a forged address; the quorum resolver still
-   returns the honest majority answer.
-7. **Experiments** — run all eleven live; they are real signed operations.
-8. **Audit** — show the hash chain and its verification badge.
+1. **Baseline** — open the console and query `techfest.cs.test`. Three direct
+   UDP rows show what each node answers; a separate resolver row shows the
+   resolver's own decision and vote map. Revisions come from each node's
+   `/status`, not from the DNS packet.
+2. **One node lies** — click **Make n3 lie**. n3's direct answer becomes
+   `10.20.5.66`; the resolver still returns `10.20.5.42` because n1 and n2
+   outvote it. A persistent **FAULT ACTIVE** banner names the fault.
+3. **Lose DNS quorum** — click **Pause n2 + n3**. n1 still answers, n2 and n3
+   time out, and the resolver returns `SERVFAIL`. The registry APIs stay up.
+4. **Registry quorum is different** — while DNS is paused, register or update a
+   name. The write still commits because registry quorum and DNS quorum are
+   separate, and the console's revision counters advance. The resolver still
+   returns `SERVFAIL` because only n1 is answering. Reset the pause when you
+   want the resolver to see a majority again.
+5. **Recover** — click **Reset DNS faults**. All three nodes answer the current
+   committed value, the resolver returns a majority answer, and the banner
+   clears.
+6. **Authority and audit** — switch to *Mallory* and try to update Alice's
+   domain: rejected with `UNAUTHORIZED`. The audit chain still verifies.
+
+The fault controls are loopback-only and disabled unless `run_demo.py` starts
+the portal with `--demo-controls` (the default). They change only the DNS
+responder; they never sign, submit, or mutate a registry operation.
 
 ---
 
@@ -171,15 +182,16 @@ dcdns/
   client.py          cluster-aware client
   dns_server.py      DNS wire format and query engine
   dns_node.py        per-node UDP authoritative responder + chaos overrides
-  quorum_resolver.py client-facing majority resolver, metrics, CLI
+  quorum_resolver.py client-facing majority resolver, metrics, /query, CLI
+  probe.py           direct node UDP probes + resolver decision for the console
   dig.py             small DNS query client for the demo
   experiments.py     live security experiments (shared by portal and CLI)
-  portal.py          demonstration UI
+  portal.py          demonstration console and signed-operation UI
   bootstrap.py       demo identities
   templates/         Jinja2 pages
   static/            CSS + small progressive-enhancement JS
-tests/               54 tests: state machine, authorization, DNS wire format,
-                     per-node responder, quorum resolver
+tests/               59 tests: state machine, authorization, DNS wire format,
+                     per-node responder, quorum resolver, console controls
 scripts/
   cluster_smoke.py   3-node failure and recovery checks
   portal_flow.py     end-to-end portal form checks
@@ -189,7 +201,7 @@ docs/
   ARCHITECTURE.md    decisions and rejected alternatives
   THREAT_MODEL.md    assets, adversaries, residual risk
   EVALUATION.md      method and results
-  DEMO_SCRIPT.md     the five-minute walkthrough
+  DEMO_SCRIPT.md     the three-minute console walkthrough
 run_demo.py          one-command launcher
 DCDNS_PROJECT_GUIDE.txt  comprehensive plain-language guide and presentation Q&A
 DCDNS_PATENT_IDEA.txt          patent-style invention disclosure (candidate, not filed)
@@ -212,6 +224,10 @@ It is **not** a trustless or peer-to-peer system:
 * the replication protocol tolerates crash and network faults, **not** malicious
   nodes (no Byzantine fault tolerance);
 * the DNS layer tolerates **one** lying node, not two colluding nodes;
+* the resolver compares semantic answers, not revisions: immediately after a
+  write, a majority of lagging nodes can briefly return the previous answer.
+  The console exposes per-node revisions and registry → DNS lag; revision-aware
+  freshness is the patent candidate, **not** implemented in this prototype;
 * the demo portal holds private keys on disk for convenience — production
   signing belongs on the client;
 * the DNS layer is authoritative for `.test` only inside this lab, and DNSSEC is

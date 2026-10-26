@@ -1582,33 +1582,43 @@ the registry auditable rather than just a key-value store.
 
 17.1 Pages
 ----------
-/                       Dashboard: nodes, cluster, DNS, per-node authorities,
-                        recent queries, recent operations.
+/                       Console: DNS query panel, fault controls, node and
+                        resolver board, quorum panels, live event log.
 /domains                Domain list, search, register form.
 /domains/{name}         Domain detail: record, owner, namespace, actions,
-                        history, DNS view.
+                        history, live DNS query panel.
 /namespaces             Namespace tree, delegate form, grant member form.
 /audit                  Global audit trail and hash-chain verification.
 /experiments            Run the live security experiments.
 /identities             Demo identities, keys, fingerprints, roles.
 /health                 Portal liveness check (used by the launcher).
 /ready                  Portal readiness: can it read committed cluster state?
-/partials/status        HTML fragment polled by the dashboard.
+/api/probe              JSON result of a live DNS probe.
+/partials/status        HTML fragment polled by the console every 2 s.
+/partials/probe         HTML query result refreshed without a page reload.
+/demo/fault/lie         Make one node return a forged DNS answer (gated).
+/demo/fault/pause       Pause or resume a node's DNS responder (gated).
+/demo/fault/reset       Clear every DNS override and pause (gated).
 /static/*               CSS and JavaScript.
 
-17.2 What the dashboard shows
------------------------------
-- Three node cards: role, revision, commit index, term, quorum, DNS port, DNS
-  revision, zone size, query count, and a "forged answer" badge if chaos is on.
-- Cluster panel: reachable nodes, committed revision, domain/namespace counts,
-  coordinator URL, audit chain badge.
-- Decentralized DNS panel: required votes, lowest node revision, live A records,
-  queries, SERVFAIL/NXDOMAIN/disagreement counts, decision rule.
-- Per-node DNS authorities table: endpoint, reachability, revision, zone size,
-  honest/forged.
-- Recent DNS queries: name, per-node votes, majority answer, agreement badge,
-  RCODE, age.
-- Recent accepted operations.
+17.2 What the console shows
+---------------------------
+- Query panel: the name, total latency, and one row per direct UDP query to
+  n1/n2/n3 plus a separate resolver row. The resolver row carries the actual
+  vote map; direct node answers are not resolver votes.
+- Fault controls: make n3 lie, pause n2, pause n2 + n3, reset. They are
+  loopback-only and gated by --demo-controls. A persistent FAULT ACTIVE banner
+  names every active DNS fault.
+- Summary strip: registry revision, reachable registry APIs, registry quorum,
+  DNS decision rule, registry -> DNS lag, audit-chain verification.
+- Four cards: three registry nodes and the resolver. Each node card separates
+  registry revision/commit index/term from DNS port/revision/zone size/state.
+- Registry quorum panel and DNS quorum panel, explicitly labelled as different
+  decisions.
+- Recent resolver decisions: name, per-node votes, majority answer, RCODE,
+  agreement, age.
+- Registry event log: the committed audit chain, refreshed with the status
+  board.
 
 17.3 How the portal signs
 -------------------------
@@ -1618,9 +1628,11 @@ private key never leaves the user's device.
 
 17.4 Live updates
 -----------------
-app.js polls /partials/status and replaces the live section. The page still works
-without JavaScript; the polling is progressive enhancement. Forms are normal POST
-requests with redirects and flash messages.
+app.js polls /partials/status every two seconds and replaces the live section,
+including the event log. Submitting the query form fetches /partials/probe and
+updates the result table without a full page reload. The page still works
+without JavaScript; polling and partial refresh are progressive enhancement.
+Forms are normal POST requests with redirects and flash messages.
 
 17.5 Experiments page
 ---------------------
@@ -1665,15 +1677,16 @@ API addresses.
 - Waits for a coordinator.
 - Seeds the campus registry.
 - Starts the quorum resolver on 5353 and metrics on 5380.
-- Starts the portal on 8000.
+- Starts the portal on 8000 with loopback-only DNS fault controls.
 - Supervises children and restarts them if they die (unless --no-supervisor).
 
 18.4 Launcher flags
 -------------------
---fresh           Delete data/live and start clean. Identities are reused.
---no-portal       Do not start the portal.
---no-dns          Do not start DNS responders or the quorum resolver.
---no-supervisor   Do not restart crashed children; useful for failure demos.
+--fresh             Delete data/live and start clean. Identities are reused.
+--no-portal         Do not start the portal.
+--no-dns            Do not start DNS responders or the quorum resolver.
+--no-supervisor     Do not restart crashed children; useful for failure demos.
+--no-demo-controls  Hide the console's DNS fault controls.
 
 18.5 Seed data
 --------------
@@ -1704,45 +1717,46 @@ on a restart. That is harmless.
 
 Expected dig output: quorum, n1, n2 and n3 all return 10.20.5.42 (NOERROR).
 
-18.7 Five-minute demo path
+18.7 Three-minute console path
+------------------------------
+1. Baseline (25 s)
+   Open http://127.0.0.1:8000 and query techfest.cs.test. Point out the three
+   registry nodes, one coordinator, the per-node DNS responders, and the quorum
+   resolver. The n1/n2/n3 rows are direct UDP queries; the resolver row is a
+   separate decision with its own vote map. Revisions come from /status, not
+   from the DNS packet.
+
+2. One node lies (30 s)
+   Click "Make n3 lie". n3 returns 10.20.5.66; n1 and n2 return the honest
+   address; the resolver returns the honest majority answer. FAULT ACTIVE names
+   the forged record.
+
+3. Lose DNS quorum (30 s)
+   Click "Pause n2 + n3". n1 still answers; n2 and n3 time out; the resolver
+   returns SERVFAIL. The registry APIs stay up and the audit chain is unchanged.
+
+4. Registry quorum still commits (30 s)
+   While DNS is paused, register or update a name as Alice. The write commits;
+   every registry node applies it, so the revision counters advance even on the
+   paused nodes. The resolver still returns SERVFAIL because only n1 answers.
+   Reset the pause to let the resolver see a majority again. The console also
+   exposes registry -> DNS lag when a node is genuinely behind.
+
+5. Recover (25 s)
+   Click "Reset DNS faults". All three nodes answer the current committed value,
+   the resolver returns a majority answer, and the banner clears. This is a flag
+   clear, not a restart or a log rollback.
+
+6. Authority and audit (20 s)
+   Switch to Mallory and try to update Alice's name: UNAUTHORIZED, record
+   unchanged. Open Audit and show that the hash chain still verifies.
+
+18.8 Manual DNS fault demo
 --------------------------
-1. Dashboard (45 s)
-   Open http://127.0.0.1:8000. Point out three nodes, one coordinator, same
-   revision, quorum available, audit chain verified, and the decentralized DNS
-   panel with three per-node authorities.
+The console buttons are the normal path. The same controls can be driven
+directly if you want to show the HTTP calls. They are enabled only when the
+node was started with --chaos and the portal was started with --demo-controls.
 
-2. Register a name (60 s)
-   Go to Domains, acting as Alice. Register myproject.cs.test at 10.20.5.50.
-   Then run:
-     python -m dcdns.dig myproject.cs.test --all
-   All three nodes and the quorum resolver should return 10.20.5.50.
-
-3. Update and observe (45 s)
-   Open the domain, change the address to 10.20.5.51, submit, query again.
-   The new answer appears in a fraction of a second. The dashboard shows the
-   revision and recent queries.
-
-4. Attack it (60 s)
-   Switch to Mallory. Try to update Alice's name. It is rejected with
-   UNAUTHORIZED and the record is unchanged. Optionally try to register inside
-   library.test as Mallory, or delegate a namespace she does not control.
-
-5. Lying node (60 s)
-   Run the experiment "Majority DNS resists a lying node". It makes n3 return
-   10.20.5.66, queries the quorum resolver, and shows the honest answer. It also
-   queries n3 directly to prove the forgery exists. It clears the override.
-   Or do it manually (see 18.8).
-
-6. Revocation (30 s)
-   As Alice, revoke myproject.cs.test. Query again: NXDOMAIN. The name cannot be
-   re-registered. The history is preserved.
-
-7. Audit (30 s)
-   Open Audit. Show the hash chain and the verification badge. Explain that
-   editing an old record breaks every later hash.
-
-18.8 Manual lying-node demo
----------------------------
 Make n3 lie:
 
   python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/chaos', json={'name':'techfest.cs.test','address':'10.20.5.66'}, timeout=3).json())"
@@ -1757,9 +1771,18 @@ Expected:
   n2      NOERROR  10.20.5.42
   n3      NOERROR  10.20.5.66   (the lie)
 
-Clear it:
+Pause the DNS responders on n2 and n3 (the registry processes keep running):
+
+  python -c "import httpx; print(httpx.post('http://127.0.0.1:9102/internal/dns/pause', json={'paused':True}, timeout=3).json())"
+  python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/dns/pause', json={'paused':True}, timeout=3).json())"
+
+Now the resolver returns SERVFAIL, while registry writes still commit.
+
+Clear the override and both pauses:
 
   python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/chaos', json={'clear':True}, timeout=3).json())"
+  python -c "import httpx; print(httpx.post('http://127.0.0.1:9102/internal/dns/pause', json={'paused':False}, timeout=3).json())"
+  python -c "import httpx; print(httpx.post('http://127.0.0.1:9103/internal/dns/pause', json={'paused':False}, timeout=3).json())"
 
 18.9 Failure demo
 -----------------
@@ -1796,7 +1819,7 @@ nslookup feature). Use python -m dcdns.dig. On Linux/macOS, dig @127.0.0.1 -p
   python scripts/cluster_smoke.py     Requires the live demo to be stopped.
 
 Latest results:
-  54/54 tests
+  59/59 tests
   9/9 cluster checks
   14/14 portal flow checks
   11/11 live experiments
@@ -1806,11 +1829,12 @@ Latest results:
 19. EVIDENCE: WHAT HAS BEEN PROVEN
 ================================================================================
 
-19.1 Unit and wire tests: 54/54
+19.1 Unit and wire tests: 59/59
 -------------------------------
 - 33 state-machine and authorization tests.
 - 10 DNS wire-format tests.
-- 11 quorum-resolver and per-node responder tests.
+- 13 quorum-resolver and per-node responder tests.
+- 3 console-control tests (gating, pause, reset).
 
 They cover:
   - signature verification and tampering,
@@ -1828,7 +1852,10 @@ They cover:
   - majority agreement, split votes, malformed votes,
   - SERVFAIL synthesis,
   - lying-node outvoting,
-  - per-node responder overrides.
+  - per-node responder overrides,
+  - DNS pause dropping datagrams without stopping the registry node,
+  - resolver /query vote map using the same decision path as UDP,
+  - portal fault-control gating and reset.
 
 19.2 Cluster integration: 9/9
 -----------------------------
@@ -2130,7 +2157,7 @@ A: "DNSSEC signs DNS answers; our Ed25519 signatures sign registry operations.
    limitation."
 
 Q27. How do you know it works?
-A: "Three layers of evidence: 54 unit and wire tests, 9 cluster failure/recovery
+A: "Three layers of evidence: 59 unit and wire tests, 9 cluster failure/recovery
    checks with real processes, 14 portal flow checks, and 11 live security
    experiments. The experiments are the same code the portal buttons call, so the
    report cannot drift from the demo."
@@ -2247,7 +2274,7 @@ departments; every change is signed with Ed25519 and committed by a majority of
 three nodes. Each node also serves DNS from its own committed state, and a client
 resolver accepts an answer only when two of three nodes agree. So there is no
 central DNS server to trust, and one lying node cannot change the answer. It is
-a working prototype with a portal, 54 tests, 9 cluster checks and 11 live
+a working prototype with a portal, 59 tests, 9 cluster checks and 11 live
 experiments."
 
 22.2 Two-minute pitch
@@ -2273,7 +2300,7 @@ one node.
 The honest boundaries: the root trust anchor remains, membership is configured,
 the registry consensus is not Byzantine-fault-tolerant, two colluding DNS nodes
 can lie, and DNSSEC is not implemented. We document those rather than hiding
-them. The evidence is 54 tests, 9 cluster failure checks, 14 portal flow checks
+them. The evidence is 59 tests, 9 cluster failure checks, 14 portal flow checks
 and 11 live experiments, including a lying-node demo."
 
 22.3 Technical two-minute pitch
@@ -2474,7 +2501,7 @@ If you remember nothing else, remember these:
 10. "The root trust anchor remains, membership is configured, consensus is not
     Byzantine-fault-tolerant, and DNSSEC is not implemented."
 
-11. "The evidence is 54 tests, 9 cluster checks, 14 portal checks and 11 live
+11. "The evidence is 59 tests, 9 cluster checks, 14 portal checks and 11 live
     experiments."
 
 12. "The project is about authority and failure semantics, not just storing rows."
@@ -2499,10 +2526,14 @@ Before the demo
 During the demo
 ---------------
 [ ] Start with the one-sentence explanation.
-[ ] Show the dashboard: three nodes, one coordinator, same revision.
-[ ] Show the decentralized DNS panel and per-node authorities.
+[ ] Show the console: three nodes, one coordinator, same revision.
+[ ] Query techfest.cs.test; distinguish direct node rows from the resolver
+    decision and its vote map.
+[ ] Click "Make n3 lie"; show n3 forged and the resolver still honest.
+[ ] Click "Pause n2 + n3"; show SERVFAIL while registry APIs stay up.
+[ ] Click "Reset DNS faults"; show all nodes answering again.
 [ ] Register a name and query all nodes.
-[ ] Update the address and show propagation.
+[ ] Update the address and show propagation after revisions converge.
 [ ] Try Mallory's forged update; show UNAUTHORIZED.
 [ ] Run the lying-node experiment; show the honest majority answer.
 [ ] Revoke a name; show NXDOMAIN and no re-registration.
@@ -2513,7 +2544,7 @@ Before questions
 ----------------
 [ ] Say the honest boundary before someone asks: permissioned, root anchor,
     not BFT, two colluding DNS nodes can lie, no DNSSEC.
-[ ] Have the numbers ready: 54/54, 9/9, 14/14, 11/11.
+[ ] Have the numbers ready: 59/59, 9/9, 14/14, 11/11.
 [ ] Have the ports ready: 8000 portal, 9101-9103 APIs, 5354-5356 node DNS,
     5353 quorum DNS, 5380 metrics.
 

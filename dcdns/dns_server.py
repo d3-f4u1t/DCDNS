@@ -34,6 +34,34 @@ RCODE_NOTIMP = 4
 # --------------------------------------------------------------------------- #
 # wire format
 # --------------------------------------------------------------------------- #
+def build_query(
+    name: str,
+    qtype: int = TYPE_A,
+    qclass: int = CLASS_IN,
+    transaction_id: bytes = b"\x7f\x01",
+) -> bytes:
+    """Build a single-question DNS query packet.
+
+    Used by the portal probe, the resolver's ``/query`` introspection endpoint
+    and the command-line client. Keeping one encoder here means the probe sees
+    exactly the same wire format as an ordinary client.
+    """
+    if not isinstance(transaction_id, bytes) or len(transaction_id) != 2:
+        raise ValueError("transaction_id must be two bytes")
+    labels = name.strip().rstrip(".").split(".")
+    if not labels or any(not label or len(label) > 63 for label in labels):
+        raise ValueError("invalid DNS name")
+    qname = b"".join(
+        bytes([len(label)]) + label.encode("ascii") for label in labels
+    ) + b"\x00"
+    return (
+        transaction_id
+        + struct.pack("!HHHHH", 0x0100, 1, 0, 0, 0)
+        + qname
+        + struct.pack("!HH", qtype, qclass)
+    )
+
+
 def parse_name(data: bytes, offset: int) -> tuple[str, int]:
     labels: list[str] = []
     end_offset = offset

@@ -1,65 +1,80 @@
 {% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
+{% block title %}Console{% endblock %}
 
 {% block content %}
-<div class="row mb">
-  <h1 style="margin:0">Registry overview</h1>
-  <span class="spacer"></span>
-  <span class="badge accent" id="live-badge">live</span>
+<div class="console-head">
+  <div>
+    <h1>DCDNS console</h1>
+    <div class="console-sub">
+      permissioned campus registry · three registry nodes · DNS majority resolver
+    </div>
+  </div>
+  <div class="console-live">
+    <span class="dot-live up" id="live-dot"></span>
+    <span id="live-label">live</span>
+    <span class="sep">·</span>
+    <span class="small muted">status poll 2s</span>
+    {% if faults %}
+      <span class="fault-pill">FAULT ACTIVE</span>
+    {% endif %}
+  </div>
 </div>
+
+<section class="query-panel">
+  <form id="dns-query-form" method="get" action="/">
+    <label for="q">DNS name</label>
+    <input id="q" name="q" value="{{ q }}" autocomplete="off" spellcheck="false"
+           placeholder="techfest.cs.test">
+    <button class="primary" type="submit">Query DNS</button>
+    <span class="query-hint">
+      direct UDP to n1/n2/n3, then the resolver's own decision
+    </span>
+  </form>
+</section>
+
+<div id="probe-live">
+  {% include "partials/probe.html" %}
+</div>
+
+{% if demo_controls %}
+<section class="panel scenario-panel">
+  <div class="panel-head">
+    <h2>DNS fault controls</h2>
+    <span class="badge muted">loopback only · DNS layer</span>
+  </div>
+  <div class="scenario-row">
+    <form method="post" action="/demo/fault/lie" class="inline-form">
+      <input type="hidden" name="node" value="n3">
+      <input type="hidden" name="name" value="{{ q }}" data-query-name>
+      <input type="hidden" name="address" value="10.20.5.66">
+      <input type="hidden" name="q" value="{{ q }}" data-query-name>
+      <button type="submit" class="danger">Make n3 lie</button>
+    </form>
+    <form method="post" action="/demo/fault/pause" class="inline-form">
+      <input type="hidden" name="node" value="n2">
+      <input type="hidden" name="paused" value="1">
+      <input type="hidden" name="q" value="{{ q }}" data-query-name>
+      <button type="submit">Pause n2</button>
+    </form>
+    <form method="post" action="/demo/fault/pause" class="inline-form">
+      <input type="hidden" name="node" value="n2,n3">
+      <input type="hidden" name="paused" value="1">
+      <input type="hidden" name="q" value="{{ q }}" data-query-name>
+      <button type="submit" class="danger">Pause n2 + n3</button>
+    </form>
+    <form method="post" action="/demo/fault/reset" class="inline-form">
+      <input type="hidden" name="q" value="{{ q }}" data-query-name>
+      <button type="submit">Reset DNS faults</button>
+    </form>
+  </div>
+  <div class="hint">
+    These controls change only the DNS responder. They do not sign or submit a
+    registry operation, and they do not change committed registry state.
+  </div>
+</section>
+{% endif %}
 
 <div id="live-status">
   {% include "partials/status.html" %}
-</div>
-
-<div class="grid cols-2 mt">
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Recent accepted operations</h2>
-      <a class="small" href="/audit">full audit trail →</a>
-    </div>
-    {% if audit %}
-    <table>
-      <thead><tr><th>Rev</th><th>Operation</th><th>Target</th><th>By</th></tr></thead>
-      <tbody>
-      {% for record in audit %}
-        <tr>
-          <td class="tnum">{{ record.revision }}</td>
-          <td><span class="badge muted">{{ record.op }}</span></td>
-          <td class="mono">{{ record.target }}</td>
-          <td class="small">{{ labels.get(record.actor, record.actor[:10] ~ '…') }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-      <div class="empty">No operations committed yet.</div>
-    {% endif %}
-  </section>
-
-  <section class="panel">
-    <div class="panel-head"><h2>Try a lookup</h2></div>
-    <form method="get" action="/domains">
-      <label class="field">
-        <span>Domain name</span>
-        <input type="text" name="q" placeholder="techfest.cs.test" value="">
-      </label>
-      <button class="primary" type="submit">Resolve in registry</button>
-    </form>
-    <p class="hint">
-      Every registry node also answers DNS on its own port. The client-facing
-      resolver on <code>127.0.0.1:5353</code> asks all three and returns an
-      answer only when a majority agrees. Try
-      <code>python -m dcdns.dig techfest.cs.test --all</code>.
-    </p>
-    <div class="panel-head mt"><h2>What you are looking at</h2></div>
-    <p class="small muted" style="margin:0">
-      Three registry nodes replicate a signed, ordered operation log. Writes are
-      acknowledged only after a majority stores them. Each node independently
-      serves DNS from the committed state it holds, so there is no central DNS
-      server to trust: a client-facing quorum resolver accepts an answer only
-      when 2 of 3 nodes agree. Revoked names stop resolving everywhere.
-    </p>
-  </section>
 </div>
 {% endblock %}

@@ -196,6 +196,8 @@ def main() -> int:
     parser.add_argument("--no-dns", action="store_true")
     parser.add_argument("--no-supervisor", action="store_true",
                         help="do not restart crashed children (useful for failure demos)")
+    parser.add_argument("--no-demo-controls", action="store_true",
+                        help="hide the portal's loopback-only DNS fault controls")
     args = parser.parse_args()
 
     # Show progress as it happens even when stdout is piped (python run_demo.py | tee ...).
@@ -244,15 +246,24 @@ def main() -> int:
 
     def launch_portal() -> subprocess.Popen:
         log = open(LOGS / "portal.log", "a", encoding="utf-8")
+        command = [
+            sys.executable, "-m", "dcdns.portal",
+            "--port", str(PORTAL_PORT),
+            "--nodes", node_urls,
+            "--dns-port", str(DNS_PORT),
+            "--dns-metrics", f"http://127.0.0.1:{DNS_METRICS_PORT}",
+            "--identities", str(IDENTITIES),
+            "--node-apis", ",".join(
+                f"{node_id}={node_url(node_id)}" for node_id in NODE_PORTS
+            ),
+            "--dns-nodes", ",".join(
+                f"{node_id}=127.0.0.1:{DNS_PORTS[node_id]}" for node_id in NODE_PORTS
+            ),
+        ]
+        if not args.no_demo_controls:
+            command.append("--demo-controls")
         return subprocess.Popen(
-            [
-                sys.executable, "-m", "dcdns.portal",
-                "--port", str(PORTAL_PORT),
-                "--nodes", node_urls,
-                "--dns-port", str(DNS_PORT),
-                "--dns-metrics", f"http://127.0.0.1:{DNS_METRICS_PORT}",
-                "--identities", str(IDENTITIES),
-            ],
+            command,
             cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
         )
 
@@ -319,6 +330,11 @@ def main() -> int:
         ))
         print(f"  Metrics     http://127.0.0.1:{DNS_METRICS_PORT}/metrics")
         print(f"  Node APIs   {', '.join(node_url(n) for n in NODE_PORTS)}")
+        if not args.no_portal:
+            print(
+                "  Console     fault controls "
+                + ("ENABLED (loopback only)" if not args.no_demo_controls else "disabled")
+            )
         print("")
         print("  Try:  python -m dcdns.dig techfest.cs.test --all")
         print("        python -m dcdns.dig techfest.cs.test --port 5354   (node n1 only)")

@@ -1,6 +1,6 @@
 # Evaluation results
 
-Generated: 2026-10-25 10:08:29
+Generated: 2026-10-26 15:46:16
 
 Produced by `python scripts/evaluate.py` against a live three-node
 cluster, its per-node DNS responders and the client-facing quorum
@@ -9,22 +9,22 @@ simulation.
 
 - Nodes reachable: **3/3**
 - Current leader: `http://127.0.0.1:9101`
-- Committed revision at start: **23**
+- Committed revision at start: **13**
 - Experiments passed: **11/11**
 
 | # | Experiment | Expected | Observed | Result |
 |---|---|---|---|---|
-| 1 | Duplicate registration | exactly one registration succeeds; the second is rejected with NAME_TAKEN | first registration committed at revision 24; second rejected with NAME_TAKEN | PASS |
-| 2 | Forged record update | rejected with UNAUTHORIZED; the stored record is unchanged | rejected with UNAUTHORIZED; record unchanged (10.20.5.123) | PASS |
+| 1 | Duplicate registration | exactly one registration succeeds; the second is rejected with NAME_TAKEN | first registration committed at revision 14; second rejected with NAME_TAKEN | PASS |
+| 2 | Forged record update | rejected with UNAUTHORIZED; the stored record is unchanged | rejected with UNAUTHORIZED; record unchanged (10.20.5.42) | PASS |
 | 3 | Cross-namespace write | rejected with UNAUTHORIZED | rejected with UNAUTHORIZED | PASS |
 | 4 | Unauthorized delegation | rejected with UNAUTHORIZED | rejected with UNAUTHORIZED | PASS |
 | 5 | Tampered signature | rejected with INVALID_SIGNATURE | rejected with INVALID_SIGNATURE | PASS |
-| 6 | Replay of a valid operation | rejected with REPLAY_DETECTED | first submission committed at revision 25; replay rejected with REPLAY_DETECTED | PASS |
+| 6 | Replay of a valid operation | rejected with REPLAY_DETECTED | first submission committed at revision 15; replay rejected with REPLAY_DETECTED | PASS |
 | 7 | Prohibited destination | rejected with RECORD_NOT_ALLOWED by the record policy | rejected with RECORD_NOT_ALLOWED | PASS |
 | 8 | Two-party ownership transfer | ownership moves only after acceptance | status after initiate: pending_transfer; owner after accept: bob | PASS |
-| 9 | Revocation removes the name from DNS | the name stops resolving within the propagation window | withdrawn from DNS 0.11s after revocation | PASS |
-| 10 | DNS propagation latency | the new answer is served within a few seconds | new answer 10.20.5.124 live 0.20s after the client response (commit took 422ms) | PASS |
-| 11 | Majority DNS resists a lying node | the resolver returns the honest address even though the lying node answers directly with the forgery | quorum returned '10.20.5.124'; n3 answered directly with '10.20.5.66' (forged '10.20.5.66', honest '10.20.5.124') | PASS |
+| 9 | Revocation removes the name from DNS | the name stops resolving within the propagation window | withdrawn from DNS 0.31s after revocation | PASS |
+| 10 | DNS propagation latency | the new answer is served within a few seconds | new answer 10.20.5.123 live 0.22s after the client response (commit took 0ms) | PASS |
+| 11 | Majority DNS resists a lying node | the resolver returns the honest address even though the lying node answers directly with the forgery | quorum returned '10.20.5.123'; n3 answered directly with '10.20.5.66' (forged '10.20.5.66', honest '10.20.5.123') | PASS |
 
 ## Machine-readable results
 
@@ -32,12 +32,12 @@ simulation.
 {
   "duplicate_registration": {
     "passed": true,
-    "observed": "first registration committed at revision 24; second rejected with NAME_TAKEN",
+    "observed": "first registration committed at revision 14; second rejected with NAME_TAKEN",
     "detail": {}
   },
   "forged_update": {
     "passed": true,
-    "observed": "rejected with UNAUTHORIZED; record unchanged (10.20.5.123)",
+    "observed": "rejected with UNAUTHORIZED; record unchanged (10.20.5.42)",
     "detail": {}
   },
   "cross_namespace": {
@@ -63,7 +63,7 @@ simulation.
   },
   "replay": {
     "passed": true,
-    "observed": "first submission committed at revision 25; replay rejected with REPLAY_DETECTED",
+    "observed": "first submission committed at revision 15; replay rejected with REPLAY_DETECTED",
     "detail": {
       "code": "REPLAY_DETECTED"
     }
@@ -82,25 +82,25 @@ simulation.
   },
   "revocation": {
     "passed": true,
-    "observed": "withdrawn from DNS 0.11s after revocation",
+    "observed": "withdrawn from DNS 0.31s after revocation",
     "detail": {}
   },
   "dns_propagation": {
     "passed": true,
-    "observed": "new answer 10.20.5.124 live 0.20s after the client response (commit took 422ms)",
+    "observed": "new answer 10.20.5.123 live 0.22s after the client response (commit took 0ms)",
     "detail": {
-      "propagation_seconds": 0.203,
-      "commit_ms": 422.0
+      "propagation_seconds": 0.218,
+      "commit_ms": 0.0
     }
   },
   "quorum_dns": {
     "passed": true,
-    "observed": "quorum returned '10.20.5.124'; n3 answered directly with '10.20.5.66' (forged '10.20.5.66', honest '10.20.5.124')",
+    "observed": "quorum returned '10.20.5.123'; n3 answered directly with '10.20.5.66' (forged '10.20.5.66', honest '10.20.5.123')",
     "detail": {
       "liar": "n3",
-      "honest": "10.20.5.124",
+      "honest": "10.20.5.123",
       "forged": "10.20.5.66",
-      "quorum_answer": "10.20.5.124",
+      "quorum_answer": "10.20.5.123",
       "liar_answer": "10.20.5.66"
     }
   }

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}DCDNS{% endblock %} · Campus Domain Registry</title>
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
 <header class="topbar">
@@ -14,7 +14,7 @@
       DCDNS <small>campus domain registry</small>
     </div>
     <nav class="main">
-      <a href="/" class="{{ 'active' if active == 'dashboard' }}">Dashboard</a>
+      <a href="/" class="{{ 'active' if active == 'dashboard' }}">Console</a>
       <a href="/domains" class="{{ 'active' if active == 'domains' }}">Domains</a>
       <a href="/namespaces" class="{{ 'active' if active == 'namespaces' }}">Namespaces</a>
       <a href="/audit" class="{{ 'active' if active == 'audit' }}">Audit</a>
@@ -49,6 +49,6 @@
   DCDNS prototype · permissioned registry with delegated namespace authority ·
   Ed25519 operations · quorum-replicated state · decentralized DNS with majority agreement
 </footer>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

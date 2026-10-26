@@ -298,6 +298,7 @@ def create_app(
             "dns_port": dns_port,
             "chaos": bool(responder and responder.overrides),
             "overrides": dict(responder.overrides) if responder else {},
+            "paused": bool(responder and responder.paused),
         }
 
     @app.post("/internal/chaos")
@@ -352,6 +353,35 @@ def create_app(
             "ok": True,
             "node_id": node_id,
             "overrides": dict(responder.overrides),
+        }
+
+    @app.post("/internal/dns/pause")
+    async def internal_dns_pause(payload: dict) -> dict:
+        """Temporarily stop this node's DNS responder (demo/failure-injection).
+
+        The registry process keeps running and keeps replicating. Only DNS
+        datagrams are dropped, which is what a resolver sees when a node is
+        unreachable at the DNS layer. Disabled unless the node was started with
+        ``--chaos``, like the lying-node endpoint.
+        """
+        if responder is None or not chaos:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "CHAOS_DISABLED",
+                        "message": "this node was not started with --chaos",
+                    },
+                },
+            )
+
+        paused = bool(payload.get("paused", payload.get("pause", True)))
+        responder.set_paused(paused)
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "paused": responder.paused,
         }
 
     return app

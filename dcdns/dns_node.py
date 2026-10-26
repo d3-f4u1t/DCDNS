@@ -37,6 +37,8 @@ class NodeDNSResponder(threading.Thread):
         self.revision_provider = revision_provider
         self.chaos_enabled = chaos_enabled
         self.overrides: dict[str, str] = {}
+        self.paused = False
+        self.paused_queries = 0
         self.engine = DNSEngine()
         self.stop_event = threading.Event()
         self.sock: socket.socket | None = None
@@ -57,7 +59,20 @@ class NodeDNSResponder(threading.Thread):
             zone.update(self.overrides)
         return zone
 
+    def set_paused(self, paused: bool) -> bool:
+        """Stop answering DNS queries without stopping the registry node.
+
+        A paused responder drops the datagram. It deliberately does not return
+        SERVFAIL: the quorum resolver must see an absent vote, not a vote for
+        SERVFAIL, or two paused nodes could accidentally form a majority.
+        """
+        self.paused = bool(paused)
+        return self.paused
+
     def handle(self, data: bytes) -> bytes | None:
+        if self.paused:
+            self.paused_queries += 1
+            return None
         self.engine.publish(self.zone(), self.revision_provider(), self.node_id)
         return self.engine.handle(data)
 
@@ -100,6 +115,8 @@ class NodeDNSResponder(threading.Thread):
         data["node_id"] = self.node_id
         data["port"] = self.port
         data["overrides"] = dict(self.overrides)
+        data["paused"] = self.paused
+        data["paused_queries"] = self.paused_queries
         data["error"] = self.error
         return data
 
@@ -116,5 +133,7 @@ class NodeDNSResponder(threading.Thread):
             "answered": metrics["answered"],
             "nxdomain": metrics["nxdomain"],
             "overrides": dict(self.overrides),
+            "paused": self.paused,
+            "paused_queries": self.paused_queries,
             "error": self.error,
         }

@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -38,6 +39,7 @@ from .dns_server import (
     RCODE_FORMERR,
     RCODE_NXDOMAIN,
     RCODE_NOERROR,
+    build_query,
     parse_name,
 )
 
@@ -166,6 +168,18 @@ def evaluate_responses(
     )
 
 
+def decision_rcode(decision: Decision) -> str:
+    if not decision.ok:
+        return "SERVFAIL"
+    if decision.winner is None:
+        return "ERROR"
+    if decision.winner[0] == RCODE_NOERROR:
+        return "NOERROR"
+    if decision.winner[0] == RCODE_NXDOMAIN:
+        return "NXDOMAIN"
+    return f"RCODE{decision.winner[0]}"
+
+
 def build_servfail(query: bytes) -> bytes:
     """Return a valid SERVFAIL, preserving the question when possible."""
     transaction_id = query[:2] if len(query) >= 2 else b"\x00\x00"
@@ -242,6 +256,7 @@ class QuorumResolver:
                 "revision": 0,
                 "zone_size": 0,
                 "overrides": {},
+                "paused": False,
                 "last_seen": 0.0,
                 "error": "not polled yet",
             }
@@ -276,11 +291,15 @@ class QuorumResolver:
         return responses
 
     # -- query path ------------------------------------------------------ #
-    def resolve(self, data: bytes) -> bytes:
+    def _resolve(self, data: bytes) -> tuple[str, int, Decision, float]:
         name, qtype = query_name(data)
+        started = time.perf_counter()
         responses = self._ask_all(data)
         decision = evaluate_responses(responses, self.required)
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        return name, qtype, decision, elapsed_ms
 
+    def _record(self, name: str, qtype: int, decision: Decision) -> None:
         with self._lock:
             self.queries += 1
             if decision.ok:
@@ -297,12 +316,7 @@ class QuorumResolver:
                 "name": name,
                 "qtype": qtype,
                 "answer": answer_text(decision.winner) if decision.ok else "SERVFAIL",
-                "rcode": (
-                    "NOERROR" if decision.ok and decision.winner and decision.winner[0] == 0
-                    else "NXDOMAIN" if decision.ok and decision.winner and decision.winner[0] == 3
-                    else "SERVFAIL" if not decision.ok
-                    else "ERROR"
-                ),
+                "rcode": decision_rcode(decision),
                 "votes": dict(decision.votes),
                 "winner": list(decision.winner_nodes),
                 "disagreement": decision.disagreement,
@@ -319,9 +333,38 @@ class QuorumResolver:
                 self.recent.append(entry)
             self.recent = self.recent[-50:]
 
+    def resolve(self, data: bytes) -> bytes:
+        name, qtype, decision, _elapsed_ms = self._resolve(data)
+        self._record(name, qtype, decision)
         if decision.ok and decision.response is not None:
             return patch_id(decision.response, data[:2])
         return build_servfail(data)
+
+    def resolve_detail(self, data: bytes) -> dict:
+        """Resolve a query and return the decision that the client would see.
+
+        This is the same code path as :meth:`resolve`; the extra return value is
+        the per-node vote map, so the dashboard can show the resolver's actual
+        decision without correlating a separate metrics entry.
+        """
+        name, qtype, decision, elapsed_ms = self._resolve(data)
+        self._record(name, qtype, decision)
+        return {
+            "ok": decision.ok,
+            "name": name,
+            "qtype": qtype,
+            "qtype_name": "A" if qtype == 1 else str(qtype),
+            "answer": answer_text(decision.winner) if decision.ok else "SERVFAIL",
+            "rcode": decision_rcode(decision),
+            "votes": dict(decision.votes),
+            "winner": list(decision.winner_nodes),
+            "disagreement": decision.disagreement,
+            "required": decision.required,
+            "responders": len(self.nodes),
+            "latency_ms": elapsed_ms,
+            "at": time.time(),
+            "source": "resolver /query (same decision path as udp/5353)",
+        }
 
     # -- status polling -------------------------------------------------- #
     def start_polling(self) -> None:
@@ -359,6 +402,7 @@ class QuorumResolver:
                             "revision": int(dns.get("revision", status.get("revision", 0))),
                             "zone_size": int(dns.get("zone_size", 0)),
                             "overrides": dict(dns.get("overrides") or {}),
+                            "paused": bool(dns.get("paused", False)),
                             "last_seen": time.time(),
                             "error": None,
                         }
@@ -419,18 +463,36 @@ class QuorumResolver:
 class MetricsHandler(BaseHTTPRequestHandler):
     resolver: QuorumResolver
 
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path.split("?")[0] not in ("/metrics", "/nodes"):
-            self.send_response(404)
-            self.end_headers()
-            return
-        payload = json.dumps(self.resolver.metrics(), indent=2).encode("utf-8")
-        self.send_response(200)
+    def _json(self, status: int, body: dict) -> None:
+        payload = json.dumps(body, indent=2).encode("utf-8")
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path in ("/metrics", "/nodes"):
+            self._json(200, self.resolver.metrics())
+            return
+        if path == "/query":
+            name = (parse_qs(parsed.query).get("name") or [""])[0].strip()
+            if not name:
+                self._json(400, {"ok": False, "error": "name is required"})
+                return
+            try:
+                packet = build_query(name)
+                self._json(200, self.resolver.resolve_detail(packet))
+            except Exception as exc:
+                self._json(
+                    400,
+                    {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                )
+            return
+        self._json(404, {"ok": False, "error": "not found"})
 
     def log_message(self, *args) -> None:  # silence per-request logging
         return

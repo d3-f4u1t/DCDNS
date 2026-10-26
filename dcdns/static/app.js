@@ -1,40 +1,90 @@
-/* Minimal progressive-enhancement helpers.
+/* Progressive enhancement for the DCDNS console.
  *
- * The portal is fully usable without JavaScript: every action is a normal form
- * POST followed by a redirect. This file only adds live status polling and
- * confirmation prompts, which keeps the demo resilient (no CDN, no build step).
+ * The portal is usable without JavaScript: the query form is a normal GET and
+ * every fault control is a normal POST followed by a redirect. This file only
+ * makes the query result and status board update without a full page reload.
  */
 (function () {
   "use strict";
 
-  // --- live cluster/DNS status -------------------------------------------
-  var target = document.getElementById("live-status");
-  var badge = document.getElementById("live-badge");
+  var statusTarget = document.getElementById("live-status");
+  var liveDot = document.getElementById("live-dot");
+  var liveLabel = document.getElementById("live-label");
+  var probeTarget = document.getElementById("probe-live");
+  var queryInput = document.getElementById("q");
+  var queryForm = document.getElementById("dns-query-form");
+  var currentQuery =
+    new URLSearchParams(window.location.search).get("q") ||
+    (queryInput && queryInput.value) ||
+    "techfest.cs.test";
+
+  function syncQueryInputs(name) {
+    currentQuery = name;
+    document.querySelectorAll("[data-query-name]").forEach(function (input) {
+      input.value = name;
+    });
+  }
 
   async function refreshStatus() {
-    if (!target) return;
+    if (!statusTarget) return;
     try {
-      var resp = await fetch("/partials/status", { cache: "no-store" });
+      var resp = await fetch(
+        "/partials/status?q=" + encodeURIComponent(currentQuery),
+        { cache: "no-store" }
+      );
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      target.innerHTML = await resp.text();
-      if (badge) {
-        badge.className = "badge accent";
-        badge.textContent = "live";
-      }
+      statusTarget.innerHTML = await resp.text();
+      if (liveDot) liveDot.className = "dot-live up";
+      if (liveLabel) liveLabel.textContent = "live";
     } catch (err) {
-      if (badge) {
-        badge.className = "badge danger";
-        badge.textContent = "polling failed";
-      }
+      // Leave the last good board in place. A transient poll failure should not
+      // replace real state with a fabricated error state, but the header must
+      // stop claiming the board is live.
+      if (liveDot) liveDot.className = "dot-live down";
+      if (liveLabel) liveLabel.textContent = "polling failed";
     }
   }
 
-  if (target) {
+  if (statusTarget) {
     refreshStatus();
     setInterval(refreshStatus, 2000);
   }
 
-  // --- destructive action confirmation -----------------------------------
+  if (queryForm && probeTarget) {
+    queryForm.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      var name = (queryInput && queryInput.value.trim()) || currentQuery;
+      if (!name) return;
+      syncQueryInputs(name);
+      var button = queryForm.querySelector("button[type=submit]");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Querying…";
+      }
+      try {
+        var resp = await fetch(
+          "/partials/probe?name=" + encodeURIComponent(name),
+          { cache: "no-store" }
+        );
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        probeTarget.innerHTML = await resp.text();
+        var url = new URL(window.location.href);
+        url.searchParams.set("q", name);
+        window.history.replaceState({}, "", url);
+      } catch (err) {
+        // Fall back to the server-rendered page if the partial request fails.
+        var url = new URL(queryForm.action, window.location.origin);
+        url.searchParams.set("q", name);
+        window.location.href = url.toString();
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = "Query DNS";
+        }
+      }
+    });
+  }
+
   document.addEventListener("submit", function (event) {
     var form = event.target;
     var message = form.getAttribute("data-confirm");
