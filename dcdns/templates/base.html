@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {% if active == 'dashboard' %}
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#07080B">
   {% endif %}
   <title>{% block title %}DCDNS{% endblock %} · Campus Domain Registry</title>
   <link rel="stylesheet" href="/static/style.css?v=3">
   {% if active == 'dashboard' %}
-  <link rel="stylesheet" href="/static/terminal.css?v=4">
+  <link rel="stylesheet" href="/static/terminal.css?v=6">
   {% endif %}
 </head>
 <body>
@@ -22,7 +22,7 @@
       <span class="dot"></span>
       DCDNS <small>campus domain registry</small>
     </div>
-    <nav class="main">
+    <nav class="main" aria-label="Primary">
       <a href="/" class="{{ 'active' if active == 'dashboard' }}"{% if active == 'dashboard' %} aria-current="page"{% endif %}>Console</a>
       <a href="/domains" class="{{ 'active' if active == 'domains' }}"{% if active == 'domains' %} aria-current="page"{% endif %}>Domains</a>
       <a href="/namespaces" class="{{ 'active' if active == 'namespaces' }}"{% if active == 'namespaces' %} aria-current="page"{% endif %}>Namespaces</a>
@@ -58,6 +58,6 @@
   DCDNS prototype · permissioned registry with delegated namespace authority ·
   Ed25519 operations · quorum-replicated state · decentralized DNS with majority agreement
 </footer>
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

@@ -2,11 +2,23 @@
 {% block title %}Console{% endblock %}
 
 {% block content %}
-<div class="term-session">
+<nav class="term-jump" aria-label="Console sections" data-section-nav>
+  <span class="term-jump-label">sections</span>
+  <a href="#query" data-section-link="query">01 query</a>
+  {% if demo_controls %}
+  <a href="#faults" data-section-link="faults">02 faults</a>
+  {% endif %}
+  <a href="#status" data-section-link="status">{{ '03' if demo_controls else '02' }} status</a>
+  <a href="#activity" data-section-link="activity">{{ '04' if demo_controls else '03' }} activity</a>
+</nav>
+
+<div class="term-session" role="status">
   <span class="term-session-label">session</span>
-  <span class="dot-live up" id="live-dot" aria-hidden="true"></span>
-  <span id="live-label">live</span>
-  <span class="term-sep" aria-hidden="true">·</span>
+  <span class="live-pill" id="live-pill">
+    <span class="dot-live up" id="live-dot" aria-hidden="true"></span>
+    <span id="live-label">live</span>
+  </span>
+  <span class="term-sep" aria-hidden="true">/</span>
   <span>status poll 2s</span>
   {% if faults %}
     <span class="fault-pill">FAULT ACTIVE</span>
@@ -118,6 +130,19 @@
     </header>
     <div id="live-status">
       {% include "partials/status.html" %}
+    </div>
+  </div>
+</section>
+
+<section class="term-block" id="activity" aria-labelledby="activity-title">
+  <div class="term-index" aria-hidden="true">{{ '04' if demo_controls else '03' }}</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="activity-title">Activity stream</h2>
+      <span class="term-meta">resolver decisions + committed audit chain</span>
+    </header>
+    <div id="live-activity" class="activity-grid">
+      {% include "partials/activity.html" %}
     </div>
   </div>
 </section>

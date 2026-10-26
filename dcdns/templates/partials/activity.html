@@ -1,0 +1,67 @@
+{% if dns %}
+<section class="activity-panel" aria-labelledby="resolver-stream-title">
+  <header class="activity-head">
+    <h3 id="resolver-stream-title">resolver.stream</h3>
+    <span class="badge muted">/metrics · ring {{ dns.recent|default([])|length }}</span>
+  </header>
+  {% if dns.recent %}
+  <div class="activity-log" role="log" aria-label="Recent resolver decisions" tabindex="0">
+    {% for item in dns.recent|default([])|reverse %}
+      {% set decision = 'NO_MAJORITY' if item.rcode == 'SERVFAIL' else ('SPLIT' if item.disagreement else 'UNANIMOUS') %}
+      <div class="log-line {{ 'danger' if item.rcode == 'SERVFAIL' else ('warn' if item.disagreement else 'ok') }}">
+        <span class="log-time">[{{ item.at_display or '--:--:--' }}]</span>
+        <span class="log-tag">RESOLVE</span>
+        <span class="log-name">{{ item.name }}</span>
+        <span class="log-arrow">-&gt;</span>
+        <span class="log-answer">{{ item.answer or '—' }}</span>
+        <span class="log-meta">:: {{ item.rcode or 'ERROR' }}</span>
+        <span class="log-meta">:: votes {{ item.votes.keys()|join(',') if item.votes else '—' }}</span>
+        <span class="log-decision">:: {{ decision }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">No resolver decisions recorded in the current ring.</div>
+  {% endif %}
+  <p class="source-note">
+    Live ring from the resolver's <code>/metrics</code>. Timestamps come from the
+    resolver process; votes are the semantic answers it compared.
+  </p>
+</section>
+{% else %}
+<section class="activity-panel" aria-labelledby="resolver-stream-title">
+  <header class="activity-head">
+    <h3 id="resolver-stream-title">resolver.stream</h3>
+    <span class="badge danger">unavailable</span>
+  </header>
+  <div class="empty">The resolver metrics port did not answer.</div>
+  <p class="source-note">No resolver decisions can be shown while metrics are unavailable.</p>
+</section>
+{% endif %}
+
+<section class="activity-panel" aria-labelledby="audit-stream-title">
+  <header class="activity-head">
+    <h3 id="audit-stream-title">registry.stream</h3>
+    <span class="badge muted">audit chain · {{ audit|length }} ops</span>
+    <a class="small" href="/audit">full audit trail →</a>
+  </header>
+  {% if audit %}
+  <div class="activity-log" role="log" aria-label="Recent committed registry operations" tabindex="0">
+    {% for record in audit %}
+      <div class="log-line">
+        <span class="log-time">[rev {{ '%02d'|format(record.revision) }}]</span>
+        <span class="log-op">{{ record.op|upper }}</span>
+        <span class="log-target">{{ record.target }}</span>
+        <span class="log-meta">:: signed {{ labels.get(record.actor, record.actor[:10] ~ '…') }}</span>
+        <span class="log-hash" title="{{ record.hash }}">:: {{ record.hash[:8] }}…{{ record.hash[-4:] }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">No accepted operations in the audit chain yet.</div>
+  {% endif %}
+  <p class="source-note">
+    Committed audit chain only. DNS faults and resolver queries are not part of
+    this chain.
+  </p>
+</section>

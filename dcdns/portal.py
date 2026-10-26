@@ -339,6 +339,15 @@ def create_app(
         revision = max([s.get("revision", 0) for s in live], default=0)
         leader = next((s.get("url") for s in live if s.get("role") == "leader"), None)
         faults = faults_from_statuses(statuses)
+        dns = dns_metrics()
+        if dns:
+            for item in dns.get("recent", []):
+                try:
+                    item["at_display"] = time.strftime(
+                        "%H:%M:%S", time.localtime(float(item["at"]))
+                    )
+                except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                    item["at_display"] = "--:--:--"
 
         domains_count = 0
         namespaces_count = 0
@@ -363,7 +372,7 @@ def create_app(
             "live": live,
             "revision": revision,
             "leader": leader,
-            "dns": dns_metrics(),
+            "dns": dns,
             "audit": audit,
             "audit_verify": audit_verify,
             "domains_count": domains_count,
@@ -408,6 +417,26 @@ def create_app(
             name="partials/status.html",
             context=context(request, "dashboard", q=q, **data),
         )
+
+    @app.get("/partials/activity", response_class=HTMLResponse)
+    def activity_partial(request: Request) -> HTMLResponse:
+        q = (request.query_params.get("q") or "techfest.cs.test").strip()
+        data = snapshot()
+        return TEMPLATES.TemplateResponse(
+            request=request,
+            name="partials/activity.html",
+            context=context(request, "dashboard", q=q, **data),
+        )
+
+    @app.get("/partials/live")
+    def live_partial(request: Request) -> JSONResponse:
+        """Both live fragments from one snapshot, for the 2s console poll."""
+        q = (request.query_params.get("q") or "techfest.cs.test").strip()
+        data = snapshot()
+        ctx = context(request, "dashboard", q=q, **data)
+        status_html = TEMPLATES.get_template("partials/status.html").render(ctx)
+        activity_html = TEMPLATES.get_template("partials/activity.html").render(ctx)
+        return JSONResponse({"status": status_html, "activity": activity_html})
 
     @app.get("/partials/probe", response_class=HTMLResponse)
     def probe_partial(request: Request, name: str = "") -> HTMLResponse:
