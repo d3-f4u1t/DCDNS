@@ -2,7 +2,6 @@
 <section class="activity-panel" aria-labelledby="resolver-stream-title">
   <header class="activity-head">
     <h3 id="resolver-stream-title">resolver.stream</h3>
-    <span class="badge muted">/metrics · ring {{ dns.recent|default([])|length }}</span>
   </header>
   {% if dns.recent %}
   <div class="activity-log" role="log" aria-label="Recent resolver decisions" tabindex="0">
@@ -32,7 +31,6 @@
 <section class="activity-panel" aria-labelledby="resolver-stream-title">
   <header class="activity-head">
     <h3 id="resolver-stream-title">resolver.stream</h3>
-    <span class="badge danger">unavailable</span>
   </header>
   <div class="empty">The resolver metrics port did not answer.</div>
   <p class="source-note">No resolver decisions can be shown while metrics are unavailable.</p>
@@ -42,7 +40,6 @@
 <section class="activity-panel" aria-labelledby="audit-stream-title">
   <header class="activity-head">
     <h3 id="audit-stream-title">registry.stream</h3>
-    <span class="badge muted">audit chain · {{ audit|length }} ops</span>
     <a class="small" href="/audit">full audit trail →</a>
   </header>
   {% if audit %}

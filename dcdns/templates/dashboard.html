@@ -14,14 +14,11 @@
 
 <div class="term-session" role="status">
   <span class="term-session-label">session</span>
-  <span class="live-pill" id="live-pill">
-    <span class="dot-live up" id="live-dot" aria-hidden="true"></span>
-    <span id="live-label">live</span>
-  </span>
+  <span class="live-label" id="live-label">live</span>
   <span class="term-sep" aria-hidden="true">/</span>
   <span>status poll 2s</span>
   {% if faults %}
-    <span class="fault-pill">FAULT ACTIVE</span>
+    <span class="fault-label">FAULT ACTIVE</span>
   {% endif %}
 </div>
 

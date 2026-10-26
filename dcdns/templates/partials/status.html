@@ -76,19 +76,16 @@
   <section class="node-card {{ 'is-down' if not node.ok else '' }}">
     <header class="node-head">
       <div class="node-title">
-        <span class="dot-live {{ 'up' if node.ok else 'down' }}"></span>
         <span class="node-id">{{ node.node_id if node.ok else node.url }}</span>
       </div>
       {% if node.ok %}
         {% if node.role == 'leader' %}
-          <span class="badge accent">leader</span>
+          <span class="node-role accent">leader</span>
         {% elif node.role == 'isolated' %}
-          <span class="badge danger">isolated</span>
-        {% else %}
-          <span class="badge muted">follower</span>
+          <span class="node-role danger">isolated</span>
         {% endif %}
       {% else %}
-        <span class="badge danger">API unreachable</span>
+        <span class="node-role danger">unreachable</span>
       {% endif %}
     </header>
 
@@ -168,21 +165,16 @@
   <section class="node-card resolver-card">
     <header class="node-head">
       <div class="node-title">
-        <span class="dot-live {{ 'up' if dns else 'down' }}"></span>
         <span class="node-id">resolver</span>
       </div>
       {% if dns %}
         {% if not dns_possible %}
-          <span class="badge danger">DNS quorum impossible</span>
+          <span class="node-role danger">quorum impossible</span>
         {% elif dns_paused or dns_forced %}
-          <span class="badge warn">fault injected</span>
-        {% elif dns.disagreements > 0 %}
-          <span class="badge muted">split votes recorded</span>
-        {% else %}
-          <span class="badge ok">decision path live</span>
+          <span class="node-role danger">fault injected</span>
         {% endif %}
       {% else %}
-        <span class="badge danger">metrics unreachable</span>
+        <span class="node-role danger">metrics unreachable</span>
       {% endif %}
     </header>
 
@@ -216,11 +208,6 @@
   <section class="panel tight" aria-labelledby="registry-quorum-title">
     <div class="panel-head">
       <h2 id="registry-quorum-title">Registry quorum</h2>
-      {% if registry_ok %}
-        <span class="badge ok">writes can commit</span>
-      {% else %}
-        <span class="badge danger">writes refused</span>
-      {% endif %}
     </div>
     <div class="stat-row">
       <div class="stat"><span class="value">{{ live_nodes | length }}/{{ nodes | length }}</span><span class="label">APIs reachable</span></div>
@@ -243,15 +230,6 @@
   <section class="panel tight" aria-labelledby="dns-quorum-title">
     <div class="panel-head">
       <h2 id="dns-quorum-title">DNS quorum</h2>
-      {% if not dns %}
-        <span class="badge danger">resolver metrics unavailable</span>
-      {% elif not dns_possible %}
-        <span class="badge danger">only {{ dns_capacity }} responder(s) left</span>
-      {% elif dns_paused or dns_forced %}
-        <span class="badge warn">fault injected</span>
-      {% else %}
-        <span class="badge ok">configured</span>
-      {% endif %}
     </div>
     <div class="stat-row">
       <div class="stat"><span class="value">{{ dns.quorum if dns else '—' }}/{{ dns.nodes | length if dns else '—' }}</span><span class="label">required</span></div>

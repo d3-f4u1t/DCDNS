@@ -52,7 +52,6 @@ html.terminal-page {
   --lh-body: 1.55;
   --lh-tight: 1.35;
   --gutter: clamp(16px, 4vw, 32px);
-  --radius-pill: 999px;
   --topbar-h: 56px;
 
   /* Remap the base stylesheet palette so shared components cannot leak the
@@ -218,14 +217,6 @@ html.terminal-page .brand {
   font-weight: 500;
   letter-spacing: 0.02em;
   white-space: nowrap;
-}
-
-html.terminal-page .brand .dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  background: var(--cyan);
-  box-shadow: 0 0 8px rgba(0, 229, 255, 0.7);
 }
 
 html.terminal-page .brand small {
@@ -423,36 +414,8 @@ html.terminal-page .term-sep {
   color: var(--border-strong);
 }
 
-html.terminal-page .live-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid rgba(0, 255, 102, 0.32);
-  border-radius: var(--radius-pill);
-  background: rgba(0, 255, 102, 0.05);
+html.terminal-page .live-label {
   color: var(--green);
-  font-size: var(--fs-micro);
-  line-height: 1.2;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-html.terminal-page .live-pill.is-down {
-  border-color: rgba(255, 42, 95, 0.4);
-  background: rgba(255, 42, 95, 0.06);
-  color: var(--red);
-}
-
-html.terminal-page .fault-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid var(--red);
-  border-radius: var(--radius-pill);
-  background: rgba(255, 42, 95, 0.07);
-  color: var(--red);
   font-size: var(--fs-micro);
   font-weight: 500;
   line-height: 1.2;
@@ -460,14 +423,17 @@ html.terminal-page .fault-pill {
   text-transform: uppercase;
 }
 
-html.terminal-page .fault-pill::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--red);
-  box-shadow: 0 0 6px var(--red);
-  animation: status-pulse 1.6s ease-in-out infinite;
+html.terminal-page .live-label.is-down {
+  color: var(--red);
+}
+
+html.terminal-page .fault-label {
+  color: var(--red);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 /* ---------------- section index ---------------- */
@@ -1053,27 +1019,11 @@ html.terminal-page .fault-main {
 }
 
 html.terminal-page .fault-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid var(--red);
-  border-radius: var(--radius-pill);
   color: var(--red);
   font-size: var(--fs-micro);
   font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-}
-
-html.terminal-page .fault-title::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--red);
-  box-shadow: 0 0 6px var(--red);
-  animation: status-pulse 1.6s ease-in-out infinite;
 }
 
 html.terminal-page .fault-list {
@@ -1198,6 +1148,24 @@ html.terminal-page .node-id {
   font-weight: 500;
   letter-spacing: 0.04em;
   overflow-wrap: anywhere;
+}
+
+html.terminal-page .node-role {
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+html.terminal-page .node-role.accent {
+  color: var(--cyan);
+}
+
+html.terminal-page .node-role.danger {
+  color: var(--red);
 }
 
 html.terminal-page .node-facts {
@@ -1519,87 +1487,12 @@ html.terminal-page .activity-panel .source-note {
 
 /* ---------------- badges and status ---------------- */
 
-html.terminal-page .dot-live {
-  display: inline-block;
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--slate);
-}
-
-html.terminal-page .dot-live.up {
-  background: var(--green);
-  box-shadow: 0 0 0 2px rgba(0, 255, 102, 0.12),
-    0 0 7px rgba(0, 255, 102, 0.65);
-  animation: status-pulse 2.2s ease-in-out infinite;
-}
-
-html.terminal-page .dot-live.down {
-  background: var(--red);
-  box-shadow: 0 0 0 2px rgba(255, 42, 95, 0.12),
-    0 0 7px rgba(255, 42, 95, 0.6);
-}
-
-html.terminal-page .dot-live.idle {
-  background: var(--slate);
-}
-
 html.terminal-page .badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 500;
-  line-height: 1.4;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-html.terminal-page .badge::before {
-  content: "";
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 5px currentColor;
-  animation: status-pulse 2.4s ease-in-out infinite;
-}
-
-html.terminal-page .badge.ok {
-  border-color: rgba(0, 255, 102, 0.35);
-  background: rgba(0, 255, 102, 0.05);
-  color: var(--green);
-}
-
-html.terminal-page .badge.danger,
-html.terminal-page .badge.warn {
-  border-color: rgba(255, 42, 95, 0.45);
-  background: rgba(255, 42, 95, 0.06);
-  color: var(--red);
-}
-
-html.terminal-page .badge.muted {
-  border-color: var(--border-strong);
-  color: var(--muted);
-}
-
-html.terminal-page .badge.accent {
-  border-color: rgba(0, 229, 255, 0.4);
-  background: rgba(0, 229, 255, 0.06);
-  color: var(--cyan);
-}
-
-html.terminal-page .state {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  display: inline;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   color: var(--muted);
   font-size: var(--fs-micro);
   font-weight: 500;
@@ -1609,14 +1502,31 @@ html.terminal-page .state {
   white-space: nowrap;
 }
 
-html.terminal-page .state::before {
-  content: "";
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 5px currentColor;
-  animation: status-pulse 2.4s ease-in-out infinite;
+html.terminal-page .badge.ok {
+  color: var(--green);
+}
+
+html.terminal-page .badge.danger,
+html.terminal-page .badge.warn {
+  color: var(--red);
+}
+
+html.terminal-page .badge.muted {
+  color: var(--muted);
+}
+
+html.terminal-page .badge.accent {
+  color: var(--cyan);
+}
+
+html.terminal-page .state {
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 html.terminal-page .state.ok {
@@ -1626,16 +1536,6 @@ html.terminal-page .state.ok {
 html.terminal-page .state.warn,
 html.terminal-page .state.danger {
   color: var(--red);
-}
-
-@keyframes status-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
-  }
 }
 
 /* ---------------- shared table remnants ---------------- */

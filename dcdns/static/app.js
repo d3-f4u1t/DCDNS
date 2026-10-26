@@ -9,12 +9,17 @@
 
   document.documentElement.classList.add("has-js");
 
+  // A hash URL names an explicit target. Do not let reload scroll restoration
+  // move the reader away from it after the section nav has aligned the page.
+  if (window.location.hash && "scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+
   var statusTarget = document.getElementById("live-status");
   var activityTarget = document.getElementById("live-activity");
-  var liveDot = document.getElementById("live-dot");
   var liveLabel = document.getElementById("live-label");
-  var livePill = document.getElementById("live-pill");
   var probeTarget = document.getElementById("probe-live");
+  var sectionNav = null;
   var queryInput = document.getElementById("q");
   var queryForm = document.getElementById("dns-query-form");
   var probeEmbed =
@@ -32,9 +37,9 @@
   }
 
   function setLiveState(ok) {
-    if (liveDot) liveDot.className = "dot-live " + (ok ? "up" : "down");
-    if (liveLabel) liveLabel.textContent = ok ? "live" : "polling failed";
-    if (livePill) livePill.className = "live-pill" + (ok ? "" : " is-down");
+    if (!liveLabel) return;
+    liveLabel.textContent = ok ? "live" : "polling failed";
+    liveLabel.classList.toggle("is-down", !ok);
   }
 
   function captureActivityScroll(target) {
@@ -89,10 +94,17 @@
       var scrollStates = activityTarget
         ? captureActivityScroll(activityTarget)
         : [];
+      var anchor = sectionNav ? sectionNav.captureAnchor() : null;
       if (statusTarget) statusTarget.innerHTML = payload.status;
       if (activityTarget && typeof payload.activity === "string") {
         activityTarget.innerHTML = payload.activity;
         restoreActivityScroll(activityTarget, scrollStates);
+      }
+      if (sectionNav) {
+        // A live update can change the height of sections above the reader.
+        // Keep the section they are looking at in the same viewport position.
+        sectionNav.restoreAnchor(anchor);
+        sectionNav.update();
       }
       setLiveState(true);
     } catch (err) {
@@ -117,19 +129,23 @@
 
   function initSectionNav() {
     var nav = document.querySelector("[data-section-nav]");
-    if (!nav) return;
+    if (!nav) return null;
     var links = Array.prototype.slice.call(
       nav.querySelectorAll("[data-section-link]")
     );
-    if (!links.length) return;
+    if (!links.length) return null;
     var sections = links
       .map(function (link) {
         return document.getElementById(link.getAttribute("data-section-link"));
       })
       .filter(Boolean);
-    if (!sections.length) return;
+    if (!sections.length) return null;
+
+    var activeId = null;
 
     function setActive(id) {
+      if (id === activeId) return;
+      activeId = id;
       links.forEach(function (link) {
         var active = link.getAttribute("data-section-link") === id;
         link.classList.toggle("active", active);
@@ -141,30 +157,133 @@
       });
     }
 
-    setActive(sections[0].id);
+    // The active section is the one with the most pixels inside the reading
+    // area below the sticky topbar and section index.
+    function update() {
+      var topbar = document.querySelector(".topbar");
+      var jump = document.querySelector(".term-jump");
+      var viewTop = 0;
+      if (topbar) {
+        viewTop = Math.max(viewTop, topbar.getBoundingClientRect().bottom);
+      }
+      if (jump) {
+        viewTop = Math.max(viewTop, jump.getBoundingClientRect().bottom);
+      }
+      var viewBottom =
+        window.innerHeight || document.documentElement.clientHeight;
+      var best = null;
+      var bestVisible = 0;
+      sections.forEach(function (section) {
+        var rect = section.getBoundingClientRect();
+        var visible =
+          Math.min(rect.bottom, viewBottom) - Math.max(rect.top, viewTop);
+        if (visible < 0) visible = 0;
+        if (visible > bestVisible + 1) {
+          best = section;
+          bestVisible = visible;
+        } else if (
+          best &&
+          visible > 0 &&
+          Math.abs(visible - bestVisible) <= 1
+        ) {
+          var bestDistance = Math.abs(
+            best.getBoundingClientRect().top - viewTop
+          );
+          var distance = Math.abs(rect.top - viewTop);
+          if (distance < bestDistance) best = section;
+        }
+      });
+      if (best) setActive(best.id);
+    }
+
+    function scrollToHash() {
+      var id = (window.location.hash || "").replace(/^#/, "");
+      if (!id) return;
+      var target = document.getElementById(id);
+      if (!target) return;
+      var topbar = document.querySelector(".topbar");
+      var jump = document.querySelector(".term-jump");
+      var offset = 0;
+      if (topbar) {
+        offset = Math.max(offset, topbar.getBoundingClientRect().bottom);
+      }
+      if (jump) {
+        offset = Math.max(offset, jump.getBoundingClientRect().bottom);
+      }
+      if (Math.abs(target.getBoundingClientRect().top - offset) <= 2) return;
+      target.scrollIntoView();
+    }
+
+    function captureAnchor() {
+      var section = activeId ? document.getElementById(activeId) : null;
+      return section
+        ? { id: activeId, top: section.getBoundingClientRect().top }
+        : null;
+    }
+
+    function restoreAnchor(anchor) {
+      if (!anchor) return;
+      var section = document.getElementById(anchor.id);
+      if (!section) return;
+      var delta = section.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+    }
+
+    var hashId = (window.location.hash || "").replace(/^#/, "");
+    var initial = sections.filter(function (section) {
+      return section.id === hashId;
+    })[0] || sections[0];
+    setActive(initial.id);
+
     links.forEach(function (link) {
       link.addEventListener("click", function () {
         setActive(link.getAttribute("data-section-link"));
       });
     });
 
-    if (!("IntersectionObserver" in window)) return;
-    var observer = new IntersectionObserver(
-      function (entries) {
-        var visible = entries.filter(function (entry) {
-          return entry.isIntersecting;
-        });
-        if (!visible.length) return;
-        visible.sort(function (a, b) {
-          return b.intersectionRatio - a.intersectionRatio;
-        });
-        setActive(visible[0].target.id);
-      },
-      { rootMargin: "-30% 0px -55% 0px", threshold: [0, 0.25, 0.5, 1] }
-    );
-    sections.forEach(function (section) {
-      observer.observe(section);
+    var ticking = false;
+    function requestUpdate() {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(function () {
+        ticking = false;
+        update();
+      });
+    }
+
+    window.addEventListener("scroll", requestUpdate, { passive: true });
+    window.addEventListener("resize", requestUpdate);
+    window.addEventListener("hashchange", function () {
+      var id = (window.location.hash || "").replace(/^#/, "");
+      if (
+        sections.some(function (section) {
+          return section.id === id;
+        })
+      ) {
+        setActive(id);
+      }
+      scrollToHash();
+      requestUpdate();
     });
+
+    function settle() {
+      scrollToHash();
+      update();
+    }
+    if (document.readyState === "complete") {
+      settle();
+    } else {
+      window.addEventListener("load", settle);
+    }
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(update);
+    }
+
+    return {
+      update: update,
+      captureAnchor: captureAnchor,
+      restoreAnchor: restoreAnchor,
+    };
   }
 
   syncTopbarHeight();
@@ -172,7 +291,7 @@
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(syncTopbarHeight);
   }
-  initSectionNav();
+  sectionNav = initSectionNav();
 
   if (queryForm && probeTarget) {
     queryForm.addEventListener("submit", async function (event) {
