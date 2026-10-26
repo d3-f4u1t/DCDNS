@@ -13,6 +13,8 @@
   var probeTarget = document.getElementById("probe-live");
   var queryInput = document.getElementById("q");
   var queryForm = document.getElementById("dns-query-form");
+  var probeEmbed =
+    queryForm && queryForm.getAttribute("data-probe-embed") === "1";
   var currentQuery =
     new URLSearchParams(window.location.search).get("q") ||
     (queryInput && queryInput.value) ||
@@ -27,13 +29,22 @@
 
   async function refreshStatus() {
     if (!statusTarget) return;
+    // Do not replace the board out from under a keyboard user or while the
+    // tab is in the background. The next poll resumes when focus leaves.
+    if (document.hidden) return;
+    if (statusTarget.contains(document.activeElement)) return;
     try {
       var resp = await fetch(
         "/partials/status?q=" + encodeURIComponent(currentQuery),
         { cache: "no-store" }
       );
       if (!resp.ok) throw new Error("HTTP " + resp.status);
-      statusTarget.innerHTML = await resp.text();
+      var html = await resp.text();
+      // A request may already have been in flight when focus moved into the
+      // board. Check again before swapping the DOM.
+      if (document.hidden) return;
+      if (statusTarget.contains(document.activeElement)) return;
+      statusTarget.innerHTML = html;
       if (liveDot) liveDot.className = "dot-live up";
       if (liveLabel) liveLabel.textContent = "live";
     } catch (err) {
@@ -62,8 +73,10 @@
         button.textContent = "Querying…";
       }
       try {
+        var probeUrl = "/partials/probe?name=" + encodeURIComponent(name);
+        if (probeEmbed) probeUrl += "&embed=1";
         var resp = await fetch(
-          "/partials/probe?name=" + encodeURIComponent(name),
+          probeUrl,
           { cache: "no-store" }
         );
         if (!resp.ok) throw new Error("HTTP " + resp.status);

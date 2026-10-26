@@ -189,7 +189,8 @@ dcdns/
   portal.py          demonstration console and signed-operation UI
   bootstrap.py       demo identities
   templates/         Jinja2 pages
-  static/            CSS + small progressive-enhancement JS
+  static/            CSS, vendored IBM Plex Mono (SIL OFL), and small
+                     progressive-enhancement JS
 tests/               60 tests: state machine, authorization, DNS wire format,
                      per-node responder, quorum resolver, console controls
 scripts/

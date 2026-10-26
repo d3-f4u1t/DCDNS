@@ -2,79 +2,123 @@
 {% block title %}Console{% endblock %}
 
 {% block content %}
-<div class="console-head">
-  <div>
-    <h1>DCDNS console</h1>
-    <div class="console-sub">
-      permissioned campus registry · three registry nodes · DNS majority resolver
+<div class="term-session">
+  <span class="term-session-label">session</span>
+  <span class="dot-live up" id="live-dot" aria-hidden="true"></span>
+  <span id="live-label">live</span>
+  <span class="term-sep" aria-hidden="true">·</span>
+  <span>status poll 2s</span>
+  {% if faults %}
+    <span class="fault-pill">FAULT ACTIVE</span>
+  {% endif %}
+</div>
+
+<section class="term-hero" aria-labelledby="console-title">
+  <div class="term-hero-main">
+    <p class="term-kicker">campus domain registry</p>
+    <h1 id="console-title">DCDNS console<span class="term-cursor" aria-hidden="true">_</span></h1>
+    <p class="term-lede">
+      Permissioned campus registry · three registry nodes · DNS majority resolver
+    </p>
+    <div class="term-actions">
+      <a class="term-action" href="/domains">Browse domains</a>
+      <a class="term-action" href="/audit">View audit trail</a>
     </div>
   </div>
-  <div class="console-live">
-    <span class="dot-live up" id="live-dot"></span>
-    <span id="live-label">live</span>
-    <span class="sep">·</span>
-    <span class="small muted">status poll 2s</span>
-    {% if faults %}
-      <span class="fault-pill">FAULT ACTIVE</span>
-    {% endif %}
-  </div>
-</div>
-
-<section class="query-panel">
-  <form id="dns-query-form" method="get" action="/">
-    <label for="q">DNS name</label>
-    <input id="q" name="q" value="{{ q }}" autocomplete="off" spellcheck="false"
-           placeholder="techfest.cs.test">
-    <button class="primary" type="submit">Query DNS</button>
-    <span class="query-hint">
-      direct UDP to n1/n2/n3, then the resolver's own decision
-    </span>
-  </form>
+  <dl class="term-facts" aria-label="System facts">
+    <div class="term-fact">
+      <dt>authority</dt>
+      <dd>permissioned registry</dd>
+    </div>
+    <div class="term-fact">
+      <dt>replication</dt>
+      <dd>leader + majority of 3</dd>
+    </div>
+    <div class="term-fact">
+      <dt>signatures</dt>
+      <dd>Ed25519 operations</dd>
+    </div>
+    <div class="term-fact">
+      <dt>dns</dt>
+      <dd>3 responders · 2-of-3 quorum</dd>
+    </div>
+  </dl>
 </section>
 
-<div id="probe-live">
-  {% include "partials/probe.html" %}
-</div>
+<section class="term-block" id="query" aria-labelledby="query-title">
+  <div class="term-index" aria-hidden="true">01</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="query-title">DNS query</h2>
+      <span class="term-meta">direct node probes + resolver decision</span>
+    </header>
+    <form id="dns-query-form" method="get" action="/" class="term-query" data-probe-embed="1">
+      <label for="q">DNS name</label>
+      <input id="q" name="q" value="{{ q }}" autocomplete="off" spellcheck="false"
+             placeholder="techfest.cs.test">
+      <button class="primary" type="submit">Query DNS</button>
+      <span class="query-hint">
+        direct UDP to n1/n2/n3, then the resolver's own decision
+      </span>
+    </form>
+    <div class="term-output-label">output</div>
+    <div id="probe-live">
+      {% include "partials/probe.html" %}
+    </div>
+  </div>
+</section>
 
 {% if demo_controls %}
-<section class="panel scenario-panel">
-  <div class="panel-head">
-    <h2>DNS fault controls</h2>
-    <span class="badge muted">loopback only · DNS layer</span>
-  </div>
-  <div class="scenario-row">
-    <form method="post" action="/demo/fault/lie" class="inline-form">
-      <input type="hidden" name="node" value="n3">
-      <input type="hidden" name="name" value="{{ q }}" data-query-name>
-      <input type="hidden" name="address" value="10.20.5.66">
-      <input type="hidden" name="q" value="{{ q }}" data-query-name>
-      <button type="submit" class="danger">Make n3 lie</button>
-    </form>
-    <form method="post" action="/demo/fault/pause" class="inline-form">
-      <input type="hidden" name="node" value="n2">
-      <input type="hidden" name="paused" value="1">
-      <input type="hidden" name="q" value="{{ q }}" data-query-name>
-      <button type="submit">Pause n2</button>
-    </form>
-    <form method="post" action="/demo/fault/pause" class="inline-form">
-      <input type="hidden" name="node" value="n2,n3">
-      <input type="hidden" name="paused" value="1">
-      <input type="hidden" name="q" value="{{ q }}" data-query-name>
-      <button type="submit" class="danger">Pause n2 + n3</button>
-    </form>
-    <form method="post" action="/demo/fault/reset" class="inline-form">
-      <input type="hidden" name="q" value="{{ q }}" data-query-name>
-      <button type="submit">Reset DNS faults</button>
-    </form>
-  </div>
-  <div class="hint">
-    These controls change only the DNS responder. They do not sign or submit a
-    registry operation, and they do not change committed registry state.
+<section class="term-block" id="faults" aria-labelledby="faults-title">
+  <div class="term-index" aria-hidden="true">02</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="faults-title">DNS fault controls</h2>
+      <span class="term-meta">loopback only · DNS layer</span>
+    </header>
+    <div class="scenario-row">
+      <form method="post" action="/demo/fault/lie" class="inline-form">
+        <input type="hidden" name="node" value="n3">
+        <input type="hidden" name="name" value="{{ q }}" data-query-name>
+        <input type="hidden" name="address" value="10.20.5.66">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="danger">Make n3 lie</button>
+      </form>
+      <form method="post" action="/demo/fault/pause" class="inline-form">
+        <input type="hidden" name="node" value="n2">
+        <input type="hidden" name="paused" value="1">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit">Pause n2</button>
+      </form>
+      <form method="post" action="/demo/fault/pause" class="inline-form">
+        <input type="hidden" name="node" value="n2,n3">
+        <input type="hidden" name="paused" value="1">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="danger">Pause n2 + n3</button>
+      </form>
+      <form method="post" action="/demo/fault/reset" class="inline-form">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit">Reset DNS faults</button>
+      </form>
+    </div>
+    <p class="term-note">
+      These controls change only the DNS responder. They do not sign or submit a
+      registry operation, and they do not change committed registry state.
+    </p>
   </div>
 </section>
 {% endif %}
 
-<div id="live-status">
-  {% include "partials/status.html" %}
-</div>
+<section class="term-block" id="status" aria-labelledby="status-title">
+  <div class="term-index" aria-hidden="true">{{ '03' if demo_controls else '02' }}</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="status-title">Live status</h2>
+      <span class="term-meta">registry + DNS · refreshed every 2s</span>
+    </header>
+    <div id="live-status">
+      {% include "partials/status.html" %}
+    </div>
+  </div>
+</section>
 {% endblock %}

@@ -396,7 +396,7 @@ def create_app(
         return TEMPLATES.TemplateResponse(
             request=request,
             name="dashboard.html",
-            context=context(request, "dashboard", q=q, probe=probe, **data),
+            context=context(request, "dashboard", q=q, probe=probe, probe_embed=True, **data),
         )
 
     @app.get("/partials/status", response_class=HTMLResponse)
@@ -413,10 +413,11 @@ def create_app(
     def probe_partial(request: Request, name: str = "") -> HTMLResponse:
         q = name.strip()
         probe = run_probe(q) if q else None
+        embed = request.query_params.get("embed") == "1"
         return TEMPLATES.TemplateResponse(
             request=request,
             name="partials/probe.html",
-            context=context(request, "dashboard", q=q, probe=probe),
+            context=context(request, "dashboard", q=q, probe=probe, probe_embed=embed),
         )
 
     @app.get("/api/probe")

@@ -36,7 +36,7 @@
 </div>
 {% endif %}
 
-<div class="summary-strip">
+<div class="summary-strip" role="group" aria-label="Live summary">
   <div class="summary-item">
     <span class="summary-label">registry rev</span>
     <span class="summary-value tnum">{{ revision }}</span>
@@ -94,21 +94,21 @@
 
     {% if node.ok %}
     <table class="node-facts">
-      <tr><th>registry API</th><td class="mono">{{ node.url }}</td></tr>
-      <tr><th>registry rev</th><td class="tnum">{{ node.revision }}</td></tr>
-      <tr><th>commit index</th><td class="tnum">{{ node.commit_index }}</td></tr>
-      <tr><th>term</th><td class="tnum">{{ node.term }}</td></tr>
-      <tr><th>registry quorum</th>
+      <tr><th scope="row">registry API</th><td class="mono">{{ node.url }}</td></tr>
+      <tr><th scope="row">registry rev</th><td class="tnum">{{ node.revision }}</td></tr>
+      <tr><th scope="row">commit index</th><td class="tnum">{{ node.commit_index }}</td></tr>
+      <tr><th scope="row">term</th><td class="tnum">{{ node.term }}</td></tr>
+      <tr><th scope="row">registry quorum</th>
         <td class="{{ 'ok' if node.has_quorum else 'danger' }}">
           {{ 'yes' if node.has_quorum else 'no' }}
         </td>
       </tr>
       {% if node.dns and node.dns.enabled %}
-      <tr><th>DNS endpoint</th><td class="mono">udp/{{ node.dns.port }}</td></tr>
-      <tr><th>DNS rev</th><td class="tnum">{{ node.dns.revision }}</td></tr>
-      <tr><th>zone size</th><td class="tnum">{{ node.dns.zone_size }}</td></tr>
-      <tr><th>DNS queries</th><td class="tnum">{{ node.dns.queries }}</td></tr>
-      <tr><th>DNS state</th>
+      <tr><th scope="row">DNS endpoint</th><td class="mono">udp/{{ node.dns.port }}</td></tr>
+      <tr><th scope="row">DNS rev</th><td class="tnum">{{ node.dns.revision }}</td></tr>
+      <tr><th scope="row">zone size</th><td class="tnum">{{ node.dns.zone_size }}</td></tr>
+      <tr><th scope="row">DNS queries</th><td class="tnum">{{ node.dns.queries }}</td></tr>
+      <tr><th scope="row">DNS state</th>
         <td>
           {% if node.dns.paused %}
             <span class="state danger">paused · drops queries</span>
@@ -122,7 +122,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><th>DNS endpoint</th><td class="muted">disabled</td></tr>
+      <tr><th scope="row">DNS endpoint</th><td class="muted">disabled</td></tr>
       {% endif %}
     </table>
 
@@ -188,15 +188,15 @@
 
     {% if dns %}
     <table class="node-facts">
-      <tr><th>DNS endpoint</th><td class="mono">udp/5353</td></tr>
-      <tr><th>decision rule</th><td class="mono">{{ dns.source }}</td></tr>
-      <tr><th>required</th><td class="tnum">{{ dns.quorum }} of {{ dns.nodes | length }}</td></tr>
-      <tr><th>published rev</th><td class="tnum">{{ dns.published_revision }}</td></tr>
-      <tr><th>zone size</th><td class="tnum">{{ dns.zone_size }}</td></tr>
-      <tr><th>queries</th><td class="tnum">{{ dns.queries }}</td></tr>
-      <tr><th>SERVFAIL</th><td class="tnum">{{ dns.servfail }}</td></tr>
-      <tr><th>disagreements</th><td class="tnum">{{ dns.disagreements }}</td></tr>
-      <tr><th>last poll</th><td class="tnum">{{ dns.seconds_since_poll }}s ago</td></tr>
+      <tr><th scope="row">DNS endpoint</th><td class="mono">udp/5353</td></tr>
+      <tr><th scope="row">decision rule</th><td class="mono">{{ dns.source }}</td></tr>
+      <tr><th scope="row">required</th><td class="tnum">{{ dns.quorum }} of {{ dns.nodes | length }}</td></tr>
+      <tr><th scope="row">published rev</th><td class="tnum">{{ dns.published_revision }}</td></tr>
+      <tr><th scope="row">zone size</th><td class="tnum">{{ dns.zone_size }}</td></tr>
+      <tr><th scope="row">queries</th><td class="tnum">{{ dns.queries }}</td></tr>
+      <tr><th scope="row">SERVFAIL</th><td class="tnum">{{ dns.servfail }}</td></tr>
+      <tr><th scope="row">disagreements</th><td class="tnum">{{ dns.disagreements }}</td></tr>
+      <tr><th scope="row">last poll</th><td class="tnum">{{ dns.seconds_since_poll }}s ago</td></tr>
     </table>
     <div class="node-note">
       API reachable: {{ dns.nodes | selectattr('reachable') | list | length }}/{{ dns.nodes | length }}.
@@ -213,9 +213,9 @@
 </div>
 
 <div class="grid cols-2 mt">
-  <section class="panel tight">
+  <section class="panel tight" aria-labelledby="registry-quorum-title">
     <div class="panel-head">
-      <h2>Registry quorum</h2>
+      <h2 id="registry-quorum-title">Registry quorum</h2>
       {% if registry_ok %}
         <span class="badge ok">writes can commit</span>
       {% else %}
@@ -240,9 +240,9 @@
     </div>
   </section>
 
-  <section class="panel tight">
+  <section class="panel tight" aria-labelledby="dns-quorum-title">
     <div class="panel-head">
-      <h2>DNS quorum</h2>
+      <h2 id="dns-quorum-title">DNS quorum</h2>
       {% if not dns %}
         <span class="badge danger">resolver metrics unavailable</span>
       {% elif not dns_possible %}
@@ -277,32 +277,34 @@
 </div>
 
 {% if dns and dns.recent %}
-<section class="panel tight mt">
+<section class="panel tight mt" aria-labelledby="recent-decisions-title">
   <div class="panel-head">
-    <h2>Recent resolver decisions</h2>
+    <h2 id="recent-decisions-title">Recent resolver decisions</h2>
     <span class="badge muted">resolver /metrics · ring of 15</span>
   </div>
   <table class="event-table">
     <thead>
-      <tr><th>Age</th><th>Name</th><th>Votes</th><th>Answer</th><th>RCODE</th><th>Decision</th></tr>
+      <tr><th scope="col">Age</th><th scope="col">Name</th><th scope="col">Votes</th><th scope="col">Answer</th><th scope="col">RCODE</th><th scope="col">Decision</th></tr>
     </thead>
     <tbody>
     {% for item in dns.recent | reverse %}
       <tr>
-        <td class="tnum">{{ (now - item.at) | round(1) }}s</td>
-        <td class="mono">{{ item.name }}</td>
-        <td class="votes">
-          {% for node_id, vote in item.votes.items() %}
-            <span class="vote {{ 'vote-winner' if node_id in item.winner else '' }}">{{ node_id }}={{ vote }}</span>
-          {% endfor %}
+        <td data-label="Age" class="tnum">{{ (now - item.at) | round(1) }}s</td>
+        <td data-label="Name" class="mono">{{ item.name }}</td>
+        <td data-label="Votes" class="votes">
+          <span class="cell-value">
+            {% for node_id, vote in item.votes.items() %}
+              <span class="vote {{ 'vote-winner' if node_id in item.winner else '' }}">{{ node_id }}={{ vote }}</span>
+            {% endfor %}
+          </span>
         </td>
-        <td class="mono">{{ item.answer or '—' }}</td>
-        <td>
+        <td data-label="Answer" class="mono answer">{{ item.answer or '—' }}</td>
+        <td data-label="RCODE">
           {% if item.rcode == 'NOERROR' %}<span class="badge ok">NOERROR</span>
           {% elif item.rcode == 'NXDOMAIN' %}<span class="badge muted">NXDOMAIN</span>
           {% else %}<span class="badge warn">{{ item.rcode }}</span>{% endif %}
         </td>
-        <td>
+        <td data-label="Decision">
           {% if item.rcode == 'SERVFAIL' %}
             <span class="badge danger">no majority</span>
           {% elif item.disagreement %}
@@ -318,9 +320,9 @@
 </section>
 {% endif %}
 
-<section class="panel tight mt">
+<section class="panel tight mt" aria-labelledby="event-log-title">
   <div class="panel-head">
-    <h2>Registry event log</h2>
+    <h2 id="event-log-title">Registry event log</h2>
     <span class="badge muted">audit chain · last {{ audit|length }} accepted operations</span>
     <span class="spacer"></span>
     <a class="small" href="/audit">full audit trail →</a>
@@ -328,16 +330,16 @@
   {% if audit %}
   <table class="event-table">
     <thead>
-      <tr><th>Rev</th><th>Operation</th><th>Target</th><th>Signed by</th><th>Source</th></tr>
+      <tr><th scope="col">Rev</th><th scope="col">Operation</th><th scope="col">Target</th><th scope="col">Signed by</th><th scope="col">Source</th></tr>
     </thead>
     <tbody>
     {% for record in audit %}
       <tr>
-        <td class="tnum">{{ record.revision }}</td>
-        <td><span class="op">{{ record.op }}</span></td>
-        <td class="mono">{{ record.target }}</td>
-        <td class="small">{{ labels.get(record.actor, record.actor[:10] ~ '…') }}</td>
-        <td class="small muted">audit chain</td>
+        <td data-label="Rev" class="tnum">{{ record.revision }}</td>
+        <td data-label="Operation"><span class="op">{{ record.op }}</span></td>
+        <td data-label="Target" class="mono">{{ record.target }}</td>
+        <td data-label="Signed by" class="small">{{ labels.get(record.actor, record.actor[:10] ~ '…') }}</td>
+        <td data-label="Source" class="small muted">audit chain</td>
       </tr>
     {% endfor %}
     </tbody>

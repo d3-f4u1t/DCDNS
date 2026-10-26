@@ -1,9 +1,12 @@
-<section class="panel probe-panel" id="probe-result">
+{% set embedded = probe_embed|default(false) %}
+<section class="panel probe-panel{{ ' probe-embedded' if embedded }}" id="probe-result">
   {% if not probe %}
+  {% if not embedded %}
   <div class="panel-head">
     <h2>DNS query</h2>
     <span class="badge muted">no query yet</span>
   </div>
+  {% endif %}
   <div class="empty">
     Enter a name and run a query. The console asks n1, n2 and n3 directly,
     then asks the resolver for its decision.
@@ -13,7 +16,9 @@
   {% set verdict = 'ok' if r.ok and not r.disagreement else ('warn' if r.ok else 'danger') %}
   <div class="probe-head">
     <div>
+      {% if not embedded %}
       <h2>DNS query</h2>
+      {% endif %}
       <div class="probe-meta">
         <span class="mono">{{ probe.name }}</span>
         <span class="sep">·</span> A
@@ -30,27 +35,27 @@
   <table class="probe-table">
     <thead>
       <tr>
-        <th>Target</th>
-        <th>Query source</th>
-        <th>RCODE</th>
-        <th>Answer</th>
-        <th>Rev / votes</th>
-        <th>Latency</th>
-        <th>State</th>
+        <th scope="col">Target</th>
+        <th scope="col">Query source</th>
+        <th scope="col">RCODE</th>
+        <th scope="col">Answer</th>
+        <th scope="col">Rev / votes</th>
+        <th scope="col">Latency</th>
+        <th scope="col">State</th>
       </tr>
     </thead>
     <tbody>
       {% for node in probe.nodes %}
       <tr class="{{ 'row-fault' if node.paused or node.overrides else '' }}">
-        <td class="mono">{{ node.node_id }}</td>
-        <td class="source">{{ node.source }}</td>
-        <td class="mono">{{ node.rcode_name }}</td>
-        <td class="mono answer">{{ node.answer or '—' }}</td>
-        <td class="tnum" title="revision source: {{ node.revision_source }}">
+        <td data-label="Target" class="mono">{{ node.node_id }}</td>
+        <td data-label="Query source" class="source">{{ node.source }}</td>
+        <td data-label="RCODE" class="mono">{{ node.rcode_name }}</td>
+        <td data-label="Answer" class="mono answer">{{ node.answer or '—' }}</td>
+        <td data-label="Rev / votes" class="tnum" title="revision source: {{ node.revision_source }}">
           {{ node.dns_revision if node.dns_revision is not none else '—' }}
         </td>
-        <td class="tnum">{{ '%.2f'|format(node.latency_ms) }} ms</td>
-        <td>
+        <td data-label="Latency" class="tnum">{{ '%.2f'|format(node.latency_ms) }} ms</td>
+        <td data-label="State">
           {% if node.paused %}
             <span class="state danger">DNS paused</span>
           {% elif node.overrides %}
@@ -66,17 +71,17 @@
       </tr>
       {% endfor %}
       <tr class="resolver-row">
-        <td class="mono">resolver</td>
-        <td class="source">{{ r.source }}</td>
-        <td class="mono">{{ r.rcode or 'ERROR' }}</td>
-        <td class="mono answer">{{ r.answer or '—' }}</td>
-        <td class="tnum">
+        <td data-label="Target" class="mono">resolver</td>
+        <td data-label="Query source" class="source">{{ r.source }}</td>
+        <td data-label="RCODE" class="mono">{{ r.rcode or 'ERROR' }}</td>
+        <td data-label="Answer" class="mono answer">{{ r.answer or '—' }}</td>
+        <td data-label="Rev / votes" class="tnum">
           {% if r.responders %}
             {{ r.votes.values() | reject('equalto', 'no-answer') | list | length }}/{{ r.responders }} answered
           {% else %}—{% endif %}
         </td>
-        <td class="tnum">{{ '%.2f'|format(r.latency_ms or 0) }} ms</td>
-        <td>
+        <td data-label="Latency" class="tnum">{{ '%.2f'|format(r.latency_ms or 0) }} ms</td>
+        <td data-label="State">
           {% if r.ok and r.disagreement %}
             <span class="state warn">majority accepted; split vote</span>
           {% elif r.ok %}
