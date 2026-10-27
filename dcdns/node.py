@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 
+from . import crypto
 from .cluster import ClusterNode
 from .dns_node import NodeDNSResponder
 from .errors import NoQuorum, NotLeader, RegistryError
@@ -33,6 +34,7 @@ def create_app(
     root_public: str,
     dns_port: int | None = None,
     chaos: bool = False,
+    dns_key: str | None = None,
 ) -> FastAPI:
     node = ClusterNode(
         node_id=node_id,
@@ -42,6 +44,12 @@ def create_app(
         root_public=root_public,
     )
     node.dns_port = dns_port
+    signer = None
+    if dns_key:
+        try:
+            signer = crypto.load_keypair(dns_key)
+        except Exception:
+            signer = None
     responder: NodeDNSResponder | None = None
     if dns_port:
         responder = NodeDNSResponder(
@@ -50,7 +58,9 @@ def create_app(
             port=dns_port,
             zone_provider=lambda: node.dns_zone,
             revision_provider=lambda: node.dns_revision,
+            snapshot_provider=lambda: node.dns_snapshot,
             chaos_enabled=chaos,
+            signer=signer,
         )
 
     app = FastAPI(
@@ -289,16 +299,21 @@ def create_app(
     @app.get("/internal/zone")
     async def internal_zone() -> dict:
         """The exact zone this node is currently answering from."""
+        summary = responder.summary() if responder else {}
         return {
             "ok": True,
             "node_id": node_id,
             "revision": node.dns_revision,
+            "serving_revision": summary.get("serving_revision", node.dns_revision),
             "zone": dict(node.dns_zone),
             "zone_size": len(node.dns_zone),
             "dns_port": dns_port,
             "chaos": bool(responder and responder.overrides),
             "overrides": dict(responder.overrides) if responder else {},
             "paused": bool(responder and responder.paused),
+            "frozen": bool(responder and responder.frozen),
+            "frozen_revision": responder.frozen_revision if responder else None,
+            "signed": bool(summary.get("signed")),
         }
 
     @app.post("/internal/chaos")
@@ -384,6 +399,42 @@ def create_app(
             "paused": responder.paused,
         }
 
+    @app.post("/internal/dns/freeze")
+    async def internal_dns_freeze(payload: dict) -> dict:
+        """Pin this node's DNS responder to its current committed snapshot.
+
+        This is the controlled replication-lag fault used by the stale-majority
+        experiment. The registry keeps committing and replicating; the DNS
+        responder keeps answering from the real zone snapshot and revision it
+        had when the freeze was applied. It never fabricates an answer and it
+        does not alter the committed log. Disabled unless the node was started
+        with ``--chaos``.
+        """
+        if responder is None or not chaos:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "CHAOS_DISABLED",
+                        "message": "this node was not started with --chaos",
+                    },
+                },
+            )
+
+        frozen = bool(payload.get("frozen", payload.get("freeze", True)))
+        responder.set_frozen(frozen)
+        summary = responder.summary()
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "frozen": responder.frozen,
+            "frozen_revision": responder.frozen_revision,
+            "serving_revision": summary.get("serving_revision"),
+            "registry_revision": summary.get("revision"),
+            "revision_lag": summary.get("revision_lag"),
+        }
+
     return app
 
 
@@ -414,6 +465,11 @@ def main() -> None:
         action="store_true",
         help="enable the loopback-only lying-node endpoint for DNS demos",
     )
+    parser.add_argument(
+        "--dns-key",
+        default=None,
+        help="path to this node's Ed25519 key for signing DNS revision tokens",
+    )
     parser.add_argument("--log-level", default="warning")
     args = parser.parse_args()
 
@@ -434,6 +490,7 @@ def main() -> None:
         args.root,
         dns_port=args.dns_port,
         chaos=args.chaos,
+        dns_key=args.dns_key,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
 

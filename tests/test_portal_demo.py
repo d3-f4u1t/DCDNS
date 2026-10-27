@@ -71,6 +71,25 @@ def test_demo_pause_route_calls_the_node_control(tmp_path):
     ]
 
 
+def test_demo_freeze_route_calls_the_node_control(tmp_path):
+    calls = []
+    app = make_app(tmp_path, demo_controls=True, http_client=FakeHTTP(calls))
+    with TestClient(app) as client:
+        calls.clear()
+        response = client.post(
+            "/demo/fault/freeze",
+            data={"node": "n1,n2", "frozen": "1", "q": "techfest.cs.test"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert "ok=" in response.headers["location"]
+    assert calls == [
+        ("http://127.0.0.1:9/internal/dns/freeze", {"frozen": True}),
+        ("http://127.0.0.1:9/internal/dns/freeze", {"frozen": True}),
+    ]
+
+
 def test_demo_reset_reports_unreachable_nodes(tmp_path):
     class FailingHTTP:
         def post(self, url, json, timeout):
@@ -106,8 +125,10 @@ def test_demo_reset_clears_override_and_pause_on_every_node(tmp_path):
     assert {url for url, _payload in calls} == {
         "http://127.0.0.1:9/internal/chaos",
         "http://127.0.0.1:9/internal/dns/pause",
+        "http://127.0.0.1:9/internal/dns/freeze",
     }
     assert {tuple(sorted(payload.items())) for _url, payload in calls} == {
         (("clear", True),),
         (("paused", False),),
+        (("frozen", False),),
     }

@@ -38,26 +38,29 @@ only when a majority agrees."*
 
 ## The three-minute path
 
-### 0:00–0:25 — Baseline
+### 0:00–0:20 — Baseline
 
 Point at the console:
 
 * three registry nodes, one leader, all at the same registry revision;
 * three per-node DNS responders on UDP 5354–5356;
-* the quorum resolver on UDP 5353, requiring 2 of 3;
+* the quorum resolver on UDP 5353, requiring 2 of 3 and F1 freshness;
 * audit chain **verified**, registry quorum **available**.
 
 Query `techfest.cs.test` in the DNS panel. Read the table carefully:
 
 * the three `n1`/`n2`/`n3` rows are **direct UDP queries** to each node;
 * the `resolver` row is a **separate decision** with its own vote map;
-* the revision column comes from each node's `/status`, not from the DNS packet.
+* the revision column comes from the EDNS token in the DNS packet, and the
+  `signed` tag means it verifies against that node's configured key;
+* the resolver row also shows the watermark and the majority's revisions.
 
 > "The resolver is not reading a cached dashboard value. `/query` uses the same
 > decision path as UDP 5353. The direct rows show what each node would say; the
-> resolver row shows what a client would actually receive."
+> resolver row shows what a client would actually receive. Agreement alone is
+> not enough: the majority must also be at the committed revision watermark."
 
-### 0:25–0:55 — One node lies
+### 0:20–0:45 — One node lies
 
 Click **Make n3 lie**.
 
@@ -69,7 +72,7 @@ Click **Make n3 lie**.
 > "n3 is lying at the DNS layer. It is outvoted. This tolerates one liar, not
 > two colluding nodes, and it is majority trust rather than DNSSEC."
 
-### 0:55–1:25 — Lose DNS quorum
+### 0:45–1:10 — Lose DNS quorum
 
 Click **Pause n2 + n3**.
 
@@ -82,7 +85,7 @@ Click **Pause n2 + n3**.
 > still running and still replicating. We isolate DNS quorum from registry
 > quorum so the distinction is visible."
 
-### 1:25–1:55 — Registry quorum still commits
+### 1:10–1:35 — Registry quorum still commits
 
 While n2 and n3 are paused at the DNS layer, go to **Domains** and register a
 name as Alice, or update an existing record.
@@ -102,19 +105,41 @@ Reset the pause when you want the resolver to return the new value. The console
 also exposes registry → DNS lag when a node is genuinely behind; here the pause,
 not a revision gap, is what keeps the resolver at `SERVFAIL`.
 
-### 1:55–2:20 — Recover
+### 1:35–2:05 — Stale majority is refused
+
+Click **Reset DNS faults**, then click **Freeze n1 + n2 DNS**. Go to **Domains**
+and update `techfest.cs.test` to a new address.
+
+* n1 and n2 keep serving their real frozen snapshot at the old revision;
+* n3 serves the new committed address;
+* the semantic-only resolver would accept the old address because n1 and n2
+  agree;
+* RAM-DNS reports `STALE_MAJORITY`, retries, and returns `SERVFAIL` because the
+  majority is behind the watermark;
+* the resolver decision stream shows the watermark and each node's revision.
+
+> "The frozen nodes are not lying. They are serving a real older committed
+> snapshot, and that is exactly the failure semantic majority cannot see. RAM-DNS
+> attaches the serving revision to each answer, compares the majority against the
+> committed watermark, and fails closed instead of presenting old data as
+> current."
+
+Click **Thaw DNS snapshots** and query again: all three nodes reach the new
+revision and the resolver returns the new address.
+
+### 2:05–2:25 — Recover
 
 Click **Reset DNS faults** (or **Clear all DNS faults** in the banner).
 
 * n2 and n3 answer again;
 * all three nodes converge on the committed revision;
-* the resolver returns the new value with a majority;
+* the resolver returns the new value with a majority and a fresh watermark;
 * the fault banner and the **FAULT ACTIVE** pill disappear.
 
 > "Recovery is a flag clear, not a restart or a state rollback. The registry log
 > was never touched by the fault."
 
-### 2:20–2:45 — Authority and audit
+### 2:25–2:45 — Authority and audit
 
 Switch **Acting as** to *Mallory (unaffiliated attacker)*. Open Alice's domain
 and try to update the record.
@@ -131,9 +156,10 @@ and try to update the record.
 
 > "Authority is delegated top-down, ownership is proven cryptographically, state
 > is majority-replicated, every node serves DNS, and the client answer is decided
-> by majority agreement. The boundaries — a root trust anchor, no Byzantine
-> tolerance, two colluding DNS nodes can lie, no DNSSEC, no key recovery, and no
-> revision-aware freshness — are documented rather than hidden."
+> by majority agreement plus revision freshness. The boundaries — a root trust
+> anchor, no Byzantine tolerance, two colluding DNS nodes can lie, no DNSSEC, no
+> key recovery, and a response-only watermark — are documented rather than
+> hidden."
 
 ---
 
@@ -146,6 +172,8 @@ Run three or four live experiments:
 * *Duplicate registration* — `NAME_TAKEN`;
 * *Forged record update* — `UNAUTHORIZED`;
 * *Replay of a valid operation* — `REPLAY_DETECTED`;
+* *Stale majority is detected, not served* — semantic-only returns the old
+  address; RAM-DNS returns `SERVFAIL` at the newer watermark;
 * *Revocation removes the name from DNS* — the name disappears from the zone.
 
 Each result is produced by a real signed operation against the running cluster,
@@ -218,6 +246,13 @@ restart it. Use `cluster_smoke.py` when you want real process death.
 > requires two matching answers. If two nodes collude, they can lie; DNSSEC is
 > the future work that would give cryptographic proof instead of majority trust."
 
+**"What is RAM-DNS?"**
+> "Revision-aware majority DNS. Each node attaches its serving registry revision
+> to the DNS answer in a signed EDNS option. The resolver first requires the usual
+> semantic majority, then checks that the majority is fresh relative to the
+> committed revision watermark. A stale majority is retried, then refused with
+> SERVFAIL instead of being served as current."
+
 **"Isn't pausing DNS just cheating?"**
 > "It is failure injection at the DNS layer, and the console labels it as such.
 > The process is still running, so it also proves that DNS quorum loss does not
@@ -225,10 +260,11 @@ restart it. Use `cluster_smoke.py` when you want real process death.
 > `cluster_smoke.py`."
 
 **"Why did the resolver briefly return the old address after a write?"**
-> "The resolver requires semantic agreement, not revision agreement. A lagging
-> majority can therefore return the previous answer for a moment. The console
-> shows per-node revisions and registry → DNS lag. Revision-aware freshness is
-> the patent candidate, not implemented here."
+> "It should not do that when RAM-DNS is enabled. The resolver checks the serving
+> revision attached to the majority's answers against the committed watermark,
+> retries if the majority is behind, and returns SERVFAIL if it stays stale. The
+> semantic-only mode (`--freshness off`) still has the old behaviour; that mode
+> exists as the experimental baseline, not as the secure default."
 
 **"What do the resolver votes mean?"**
 > "Each vote is the semantic answer from one node. `no-answer` means the node
@@ -236,9 +272,11 @@ restart it. Use `cluster_smoke.py` when you want real process death.
 > majority of configured responders, so two absent votes cannot form a majority."
 
 **"How do you know it works?"**
-> "60 tests, 9 cluster failure checks, 14 portal flow checks and 11 live
+> "97 tests, 9 cluster failure checks, 14 portal flow checks and 12 live
 > experiments. All reproducible with the commands in the README, and the results
-> file is generated by the same code the demo buttons call."
+> file is generated by the same code the demo buttons call. The stale-majority
+> experiment freezes two real DNS snapshots and shows the semantic-only resolver
+> returning the old address while RAM-DNS returns SERVFAIL."
 
 ---
 

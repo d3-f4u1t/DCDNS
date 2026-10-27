@@ -29,6 +29,9 @@
       </div>
       <div class="meta">{{ experiment.description }}</div>
       <div class="meta">expected: {{ experiment.expectation }}</div>
+      {% if experiment.id == 'stale_majority' %}
+        <div class="meta"><span class="badge accent">RAM-DNS</span> revision-aware freshness check</div>
+      {% endif %}
       {% if results.get(experiment.id) %}
         <div class="result">
           observed: {{ results[experiment.id].observed }}
@@ -48,7 +51,10 @@
     A registry that only works when everyone behaves is not evidence of anything.
     These experiments exercise the failure paths the design claims to handle:
     unauthorized writes, replayed signatures, cross-namespace delegation, record
-    policy violations, ownership transfer, revocation, and DNS convergence.
+    policy violations, ownership transfer, revocation, and DNS convergence. The
+    stale-majority experiment additionally checks the RAM-DNS freshness rule:
+    semantic agreement alone is not enough when the agreeing majority is behind
+    the committed revision watermark.
   </p>
 </section>
 {% endblock %}

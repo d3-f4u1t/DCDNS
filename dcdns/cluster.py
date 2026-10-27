@@ -72,9 +72,12 @@ class ClusterNode:
 
         # Every node is also a DNS authority. This is a flattened, immutable
         # snapshot of the *committed* state; the DNS responder thread reads it
-        # without taking the event loop's locks.
+        # without taking the event loop's locks. ``dns_snapshot`` binds the zone
+        # and revision in one atomic tuple so a responder can never publish a
+        # zone and a revision from different commits.
         self.dns_zone: dict[str, str] = {}
         self.dns_revision: int = 0
+        self.dns_snapshot: tuple[dict[str, str], int] = ({}, 0)
         self.dns_port: int | None = None
 
         self.live_peers: set[str] = set()
@@ -135,17 +138,20 @@ class ClusterNode:
     def _refresh_dns_zone(self) -> None:
         """Rebuild the per-node DNS view from committed state.
 
-        The responder thread only ever reads ``dns_zone`` / ``dns_revision``.
-        Replacing the dict atomically (rather than mutating it) means a query
-        can never observe a half-updated zone.
+        The responder thread only ever reads ``dns_snapshot``. Replacing the
+        tuple atomically (rather than mutating it) means a query can never
+        observe a zone and a revision from different commits. The separate
+        ``dns_zone`` / ``dns_revision`` attributes are kept for status output.
         """
         zone: dict[str, str] = {}
         for name, records in self.state.snapshot_for_dns().items():
             address = records.get("A")
             if address:
                 zone[name] = address
+        revision = self.state.revision
+        self.dns_snapshot = (zone, revision)
         self.dns_zone = zone
-        self.dns_revision = self.state.revision
+        self.dns_revision = revision
 
     def _persist_meta(self) -> None:
         tmp = self._meta_path.with_suffix(".tmp")

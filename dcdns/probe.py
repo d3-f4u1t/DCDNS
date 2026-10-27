@@ -17,7 +17,12 @@ from typing import Mapping
 
 import httpx
 
-from .dns_server import build_query, parse_name
+from .dns_server import (
+    build_query,
+    parse_name,
+    parse_revision_metadata,
+    parse_stale_marker,
+)
 from .experiments import DEFAULT_DNS_NODES
 
 RCODE_NAMES = {
@@ -89,6 +94,7 @@ def query_dns(
         data, _ = sock.recvfrom(4096)
         elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
         rcode, answer = decode_response(data)
+        metadata = parse_revision_metadata(data)
         return {
             "node_id": None,
             "host": host,
@@ -96,6 +102,10 @@ def query_dns(
             "rcode": rcode,
             "rcode_name": RCODE_NAMES.get(rcode, f"RCODE{rcode}"),
             "answer": answer,
+            "revision": metadata.revision if metadata else None,
+            "revision_node": metadata.node_id if metadata else None,
+            "revision_signed": bool(metadata and metadata.signed),
+            "stale": parse_stale_marker(data),
             "latency_ms": elapsed_ms,
             "error": None,
             "source": f"direct UDP {host}:{port}",
@@ -109,6 +119,10 @@ def query_dns(
             "rcode": -1,
             "rcode_name": "NO RESPONSE",
             "answer": None,
+            "revision": None,
+            "revision_node": None,
+            "revision_signed": False,
+            "stale": None,
             "latency_ms": elapsed_ms,
             "error": type(exc).__name__,
             "source": f"direct UDP {host}:{port}",

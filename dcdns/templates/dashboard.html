@@ -49,7 +49,7 @@
     </div>
     <div class="term-fact">
       <dt>dns</dt>
-      <dd>3 responders · 2-of-3 quorum</dd>
+      <dd>3 responders · 2-of-3 + freshness</dd>
     </div>
   </dl>
 </section>
@@ -105,6 +105,18 @@
         <input type="hidden" name="q" value="{{ q }}" data-query-name>
         <button type="submit" class="danger">Pause n2 + n3</button>
       </form>
+      <form method="post" action="/demo/fault/freeze" class="inline-form">
+        <input type="hidden" name="node" value="n1,n2">
+        <input type="hidden" name="frozen" value="1">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="danger">Freeze n1 + n2 DNS</button>
+      </form>
+      <form method="post" action="/demo/fault/freeze" class="inline-form">
+        <input type="hidden" name="node" value="n1,n2,n3">
+        <input type="hidden" name="frozen" value="0">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit">Thaw DNS snapshots</button>
+      </form>
       <form method="post" action="/demo/fault/reset" class="inline-form">
         <input type="hidden" name="q" value="{{ q }}" data-query-name>
         <button type="submit">Reset DNS faults</button>
@@ -113,6 +125,9 @@
     <p class="term-note">
       These controls change only the DNS responder. They do not sign or submit a
       registry operation, and they do not change committed registry state.
+      Freezing two responders pins them to a real committed snapshot; commit an
+      address update afterwards and the semantic majority is stale while RAM-DNS
+      fails closed until the responders catch up.
     </p>
   </div>
 </section>

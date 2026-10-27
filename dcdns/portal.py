@@ -56,6 +56,7 @@ def create_app(
     dns_nodes: dict[str, tuple[str, int]] | None = None,
     node_apis: dict[str, str] | None = None,
     http_client: httpx.Client | None = None,
+    node_keys: dict[str, str] | None = None,
 ) -> FastAPI:
     urls = node_urls or [u.strip() for u in os.environ.get("DCDNS_NODES", DEFAULT_NODES).split(",")]
     client = ClusterClient(urls, timeout=6.0)
@@ -65,6 +66,7 @@ def create_app(
     # scan) and made the dashboard take ten seconds to render.
     http = http_client or httpx.Client(timeout=3.0)
     dns_nodes = dict(dns_nodes or DEFAULT_DNS_NODES)
+    node_keys = dict(node_keys or {})
     node_apis = dict(
         node_apis
         or {f"n{index + 1}": url for index, url in enumerate(urls)}
@@ -191,6 +193,17 @@ def create_app(
                         "detail": f"{name} → {address}",
                     }
                 )
+            if dns.get("frozen"):
+                faults.append(
+                    {
+                        "node_id": status.get("node_id", "?"),
+                        "kind": "dns_frozen",
+                        "detail": (
+                            f"serving revision {dns.get('frozen_revision')} "
+                            f"(registry {dns.get('revision')})"
+                        ),
+                    }
+                )
         return faults
 
     def run_probe(raw_name: str) -> dict | None:
@@ -213,11 +226,19 @@ def create_app(
             status = status_by_id.get(row["node_id"]) or {}
             dns = status.get("dns") or {}
             row["registry_revision"] = status.get("revision")
-            row["dns_revision"] = dns.get("revision")
+            row["dns_revision"] = dns.get("serving_revision", dns.get("revision"))
+            row["dns_registry_revision"] = dns.get("revision")
+            row["packet_revision"] = row.get("revision")
+            row["packet_signed"] = bool(row.get("revision_signed"))
+            row["dns_frozen"] = bool(dns.get("frozen"))
+            row["dns_revision_lag"] = int(dns.get("revision_lag", 0) or 0)
             row["paused"] = bool(dns.get("paused"))
             row["overrides"] = dict(dns.get("overrides") or {})
             row["api_reachable"] = bool(status.get("ok"))
-            row["revision_source"] = "node /status" if status.get("ok") else "unavailable"
+            row["revision_source"] = (
+                "DNS EDNS token" if row.get("packet_revision") is not None
+                else ("node /status" if status.get("ok") else "unavailable")
+            )
 
         # If the resolver process predates the /query endpoint, still show the
         # client-visible UDP answer. The UI labels the fallback source.
@@ -286,6 +307,7 @@ def create_app(
             for path, payload in (
                 ("/internal/chaos", {"clear": True}),
                 ("/internal/dns/pause", {"paused": False}),
+                ("/internal/dns/freeze", {"frozen": False}),
             ):
                 try:
                     response = http.post(f"{url}{path}", json=payload, timeout=1.0)
@@ -661,7 +683,14 @@ def create_app(
 
     @app.post("/experiments/{experiment_id}")
     def run_experiment(request: Request, experiment_id: str) -> RedirectResponse:
-        runner = ExperimentRunner(client, keys, resolver)
+        runner = ExperimentRunner(
+            client,
+            keys,
+            resolver,
+            dns_nodes=dns_nodes,
+            node_apis=node_apis,
+            node_keys=node_keys,
+        )
         result = runner.run(experiment_id).as_dict()
         EXPERIMENT_RESULTS[experiment_id] = result
         if result["passed"]:
@@ -762,6 +791,51 @@ def create_app(
             )
         return redirect(target, ok="all DNS demo faults cleared")
 
+    @app.post("/demo/fault/freeze")
+    def demo_freeze(
+        request: Request,
+        node: str = Form("n1,n2"),
+        frozen: str = Form("1"),
+        q: str = Form(""),
+    ) -> RedirectResponse:
+        """Pin one or more DNS responders to their current committed snapshot.
+
+        This is the manual version of the stale-majority experiment: freeze two
+        nodes, commit an address change, and the semantic-only answer is stale
+        while RAM-DNS fails closed. The registry keeps committing throughout.
+        """
+        require_demo()
+        target = "/?q=" + quote(q or "techfest.cs.test")
+        want_frozen = frozen.strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            node_ids = [item.strip() for item in node.split(",") if item.strip()]
+            if not node_ids:
+                raise ValueError("at least one node is required")
+            results = []
+            for node_id in node_ids:
+                result = post_node(
+                    node_id, "/internal/dns/freeze", {"frozen": want_frozen}
+                )
+                state = (
+                    f"frozen at rev {result.get('frozen_revision')}"
+                    if result.get("frozen")
+                    else "live"
+                )
+                results.append(f"{node_id}={state}")
+            return redirect(
+                target,
+                ok=", ".join(results)
+                + " (DNS snapshot only; registry replication continues)",
+            )
+        except HTTPException as exc:
+            return redirect(target, err=str(exc.detail), code="DEMO_CONTROL_FAILED")
+        except Exception as exc:
+            return redirect(
+                target,
+                err=f"{type(exc).__name__}: {exc}",
+                code="DEMO_CONTROL_FAILED",
+            )
+
     # ------------------------------------------------------------------ #
     # identities
     # ------------------------------------------------------------------ #
@@ -812,6 +886,11 @@ def main() -> None:
         default="n1=127.0.0.1:5354,n2=127.0.0.1:5355,n3=127.0.0.1:5356",
         help="comma separated id=host:udp-port entries for direct DNS probes",
     )
+    parser.add_argument(
+        "--node-keys",
+        default="",
+        help="comma separated id=public-key entries for verifying signed revision tokens",
+    )
     args = parser.parse_args()
 
     def parse_pairs(spec: str) -> dict[str, str]:
@@ -840,6 +919,7 @@ def main() -> None:
         demo_controls=args.demo_controls,
         node_apis=node_apis,
         dns_nodes=dns_nodes,
+        node_keys=parse_pairs(args.node_keys) if args.node_keys else {},
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

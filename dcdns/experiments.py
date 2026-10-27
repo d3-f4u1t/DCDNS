@@ -17,7 +17,13 @@ import httpx
 
 from . import crypto
 from .client import ClusterClient, ClusterError
-from .dns_server import parse_name
+from .dns_server import (
+    build_query,
+    parse_name,
+    parse_revision_metadata,
+    parse_stale_marker,
+)
+from .quorum_resolver import FreshnessPolicy, QuorumResolver
 
 DEFAULT_DNS_NODES = {
     "n1": ("127.0.0.1", 5354),
@@ -98,6 +104,12 @@ EXPERIMENTS = [
         "description": "One registry node is made to return a forged A record; the quorum resolver must still return the honest majority answer.",
         "expectation": "the resolver returns the honest address even though the lying node answers directly with the forgery",
     },
+    {
+        "id": "stale_majority",
+        "title": "Stale majority is detected, not served",
+        "description": "Two nodes keep serving an older committed DNS snapshot while a third has the new address; the semantic-only resolver returns the stale answer, while RAM-DNS detects the freshness failure.",
+        "expectation": "baseline returns the stale address; RAM-DNS retries and returns SERVFAIL (or a marked stale answer), then serves the new address after the lagging nodes catch up",
+    },
 ]
 
 
@@ -114,43 +126,77 @@ class Result:
 class Resolver:
     """Tiny UDP DNS client used to observe the quorum resolver and individual nodes."""
 
+    RCODE_NAMES = {
+        -1: "NO RESPONSE",
+        0: "NOERROR",
+        1: "FORMERR",
+        2: "SERVFAIL",
+        3: "NXDOMAIN",
+        4: "NOTIMP",
+        5: "REFUSED",
+    }
+
     def __init__(self, host: str, port: int, timeout: float = 1.0) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
 
-    def query(self, name: str) -> tuple[int, str | None]:
-        labels = name.rstrip(".").split(".")
-        qname = b"".join(bytes([len(l)]) + l.encode() for l in labels) + b"\x00"
-        packet = (
-            b"\x7f\x01"
-            + struct.pack("!HHHHH", 0x0100, 1, 0, 0, 0)
-            + qname
-            + struct.pack("!HH", 1, 1)
-        )
+    def query_raw(self, name: str) -> bytes | None:
+        packet = build_query(name)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self.timeout)
         try:
             sock.sendto(packet, (self.host, self.port))
-            data, _ = sock.recvfrom(2048)
+            data, _ = sock.recvfrom(4096)
+            return data
         except (socket.timeout, OSError):
-            return -1, None
+            return None
         finally:
             sock.close()
+
+    def query_detail(self, name: str) -> dict:
+        """Return the answer plus any revision or stale marker in the packet."""
+        data = self.query_raw(name)
+        if data is None:
+            return {
+                "rcode": -1,
+                "rcode_name": "NO RESPONSE",
+                "answer": None,
+                "revision": None,
+                "node_id": None,
+                "signed": False,
+                "stale": None,
+                "raw": None,
+            }
 
         flags = struct.unpack("!H", data[2:4])[0]
         ancount = struct.unpack("!H", data[6:8])[0]
         rcode = flags & 0x000F
         _, offset = parse_name(data, 12)
         offset += 4  # qtype + qclass
-        if ancount == 0:
-            return rcode, None
-        _, offset = parse_name(data, offset)
-        rtype, _, _, rdlength = struct.unpack("!HHIH", data[offset:offset + 10])
-        offset += 10
-        if rtype == 1 and rdlength == 4:
-            return rcode, socket.inet_ntoa(data[offset:offset + 4])
-        return rcode, None
+        answer = None
+        if ancount:
+            _, offset = parse_name(data, offset)
+            rtype, _, _, rdlength = struct.unpack("!HHIH", data[offset:offset + 10])
+            offset += 10
+            if rtype == 1 and rdlength == 4:
+                answer = socket.inet_ntoa(data[offset:offset + 4])
+
+        metadata = parse_revision_metadata(data)
+        return {
+            "rcode": rcode,
+            "rcode_name": self.RCODE_NAMES.get(rcode, f"RCODE{rcode}"),
+            "answer": answer,
+            "revision": metadata.revision if metadata else None,
+            "node_id": metadata.node_id if metadata else None,
+            "signed": bool(metadata and metadata.signed),
+            "stale": parse_stale_marker(data),
+            "raw": data,
+        }
+
+    def query(self, name: str) -> tuple[int, str | None]:
+        detail = self.query_detail(name)
+        return detail["rcode"], detail["answer"]
 
     def wait_for(self, name: str, address: str, timeout: float = 8.0) -> float | None:
         """Return seconds until ``name`` resolves to ``address``, or None."""
@@ -183,12 +229,14 @@ class ExperimentRunner:
         resolver: Resolver,
         dns_nodes: dict[str, tuple[str, int]] | None = None,
         node_apis: dict[str, str] | None = None,
+        node_keys: dict[str, str] | None = None,
     ) -> None:
         self.client = client
         self.keys = keys
         self.resolver = resolver
         self.dns_nodes = dict(dns_nodes or DEFAULT_DNS_NODES)
         self.node_apis = dict(node_apis or DEFAULT_NODE_APIS)
+        self.node_keys = dict(node_keys or {})
 
     # -- helpers --------------------------------------------------------- #
     def _submit(self, signer: str, op: str, body: dict) -> dict:
@@ -224,6 +272,24 @@ class ExperimentRunner:
             return self.client.get(f"/domains/{name}")["domain"]
         except ClusterError:
             return None
+
+    def _freeze_dns(self, node_id: str, frozen: bool) -> dict:
+        """Pin or release one node's DNS snapshot (loopback fault injection)."""
+        api = self.node_apis.get(node_id)
+        if not api:
+            raise RuntimeError(f"no API URL configured for {node_id}")
+        response = httpx.post(
+            f"{api}/internal/dns/freeze",
+            json={"frozen": frozen},
+            timeout=3.0,
+        )
+        if response.status_code == 404:
+            raise RuntimeError(
+                f"freeze endpoint on {node_id} is disabled; "
+                "start the demo with node chaos enabled"
+            )
+        response.raise_for_status()
+        return response.json()
 
     # -- experiments ------------------------------------------------------ #
     def run(self, experiment_id: str) -> Result:
@@ -426,8 +492,159 @@ class ExperimentRunner:
             except httpx.HTTPError:
                 pass
 
+    def _run_stale_majority(self) -> Result:
+        """Freeze two DNS snapshots, commit a new address, compare resolvers.
+
+        The two frozen responders keep serving the exact committed zone and
+        revision they had at freeze time. The third responder sees the new
+        commit. This is a real stale majority: no answer is fabricated, the
+        registry keeps replicating, and the frozen nodes' HTTP status still
+        shows the newer committed revision.
+        """
+        name = "techfest.cs.test"
+        if not self._ensure_domain(name):
+            return Result(False, "could not create the fixture domain")
+        domain = self._domain(name)
+        if domain is None:
+            return Result(False, "could not read the fixture domain")
+        stale_address = domain["records"]["A"]
+        target = "10.20.5.123" if stale_address != "10.20.5.123" else "10.20.5.124"
+
+        node_ids = sorted(self.dns_nodes)
+        if len(node_ids) < 3:
+            return Result(False, "stale-majority experiment needs three DNS nodes")
+        lagging = node_ids[:2]
+        current = node_ids[-1]
+
+        baseline: QuorumResolver | None = None
+        ram: QuorumResolver | None = None
+        try:
+            for node_id in lagging:
+                self._freeze_dns(node_id, True)
+
+            commit = self._submit(
+                "alice", "update_records",
+                {"name": name, "records": {"A": target}},
+            )
+
+            # Wait until the unfrozen node serves the new answer.
+            direct = Resolver(*self.dns_nodes[current])
+            deadline = time.monotonic() + 6.0
+            fresh_seen = False
+            while time.monotonic() < deadline:
+                detail = direct.query_detail(name)
+                if detail["rcode"] == 0 and detail["answer"] == target:
+                    fresh_seen = True
+                    break
+                time.sleep(0.1)
+            if not fresh_seen:
+                return Result(
+                    False,
+                    f"{current} never served the new answer {target}",
+                )
+
+            baseline = QuorumResolver(
+                self.dns_nodes,
+                required=2,
+                freshness=False,
+                timeout=1.0,
+            )
+            ram = QuorumResolver(
+                self.dns_nodes,
+                required=2,
+                freshness=FreshnessPolicy(
+                    enabled=True,
+                    condition="F1",
+                    delta=0,
+                    watermark_source="responses",
+                    stale_policy="servfail",
+                    retry_budget=2,
+                    retry_interval=0.05,
+                ),
+                node_keys=self.node_keys,
+                timeout=1.0,
+            )
+            packet = build_query(name)
+            baseline_detail = baseline.resolve_detail(packet)
+            ram_detail = ram.resolve_detail(packet)
+            live_detail = self.resolver.query_detail(name)
+        finally:
+            for node_id in lagging:
+                try:
+                    self._freeze_dns(node_id, False)
+                except Exception:
+                    pass
+            if baseline is not None:
+                baseline.stop()
+            if ram is not None:
+                ram.stop()
+
+        convergence = self.resolver.wait_for(name, target, timeout=8.0)
+        freshness = ram_detail.get("freshness") or {}
+        majority_revisions = freshness.get("majority_revisions") or []
+        watermark = freshness.get("watermark")
+
+        baseline_stale = (
+            baseline_detail.get("ok") is True
+            and baseline_detail.get("answer") == stale_address
+        )
+        ram_detected = (
+            ram_detail.get("ok") is False
+            and bool(freshness.get("stale_majority"))
+            and watermark is not None
+            and watermark > max(majority_revisions or [0])
+        )
+        live_blocked = (
+            live_detail.get("rcode") == 2
+            or (
+                live_detail.get("rcode") == 0
+                and live_detail.get("stale") is not None
+            )
+        )
+        passed = (
+            baseline_stale
+            and ram_detected
+            and live_blocked
+            and convergence is not None
+        )
+        observed = (
+            f"baseline returned stale {baseline_detail.get('answer')!r} "
+            f"(majority rev {majority_revisions}); "
+            f"RAM-DNS watermark {watermark} -> {ram_detail.get('rcode')} "
+            f"({ram_detail.get('reason')}); "
+            f"live resolver {live_detail.get('rcode_name')}"
+            + (", marked stale" if live_detail.get("stale") else "")
+            + (
+                f"; fresh answer after {convergence:.2f}s"
+                if convergence is not None
+                else "; did not converge after unfreeze"
+            )
+        )
+        return Result(
+            passed,
+            observed,
+            {
+                "stale_address": stale_address,
+                "target": target,
+                "lagging_nodes": lagging,
+                "current_node": current,
+                "commit_revision": commit.get("revision"),
+                "baseline": baseline_detail,
+                "ram_dns": ram_detail,
+                "live": {
+                    key: value
+                    for key, value in live_detail.items()
+                    if key != "raw"
+                },
+                "convergence_seconds": (
+                    round(convergence, 3) if convergence is not None else None
+                ),
+            },
+        )
+
 
 def run_all(client: ClusterClient, keys: dict[str, crypto.KeyPair],
-            resolver: Resolver) -> dict[str, dict]:
-    runner = ExperimentRunner(client, keys, resolver)
+            resolver: Resolver,
+            node_keys: dict[str, str] | None = None) -> dict[str, dict]:
+    runner = ExperimentRunner(client, keys, resolver, node_keys=node_keys)
     return {exp["id"]: runner.run(exp["id"]).as_dict() for exp in EXPERIMENTS}

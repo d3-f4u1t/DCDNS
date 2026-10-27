@@ -13,7 +13,7 @@
   </div>
   {% else %}
   {% set r = probe.resolver %}
-  {% set verdict = 'ok' if r.ok and not r.disagreement else ('warn' if r.ok else 'danger') %}
+  {% set verdict = 'danger' if not r.ok else ('warn' if r.disagreement or r.stale else 'ok') %}
   <div class="probe-head">
     <div>
       {% if not embedded %}
@@ -32,6 +32,22 @@
     </div>
   </div>
 
+  {% if r.freshness and r.freshness.enabled %}
+  <div class="probe-freshness">
+    <span class="trace-label">freshness</span>
+    <span class="probe-fresh {{ 'ok' if r.freshness.fresh else 'danger' }}">
+      {{ r.freshness.condition }}
+      · watermark {{ r.freshness.watermark if r.freshness.watermark is not none else '—' }}
+      ({{ r.freshness.watermark_source }})
+    </span>
+    <span class="trace-note">
+      {{ r.freshness.reason or '—' }}
+      {% if r.freshness.retries %}· {{ r.freshness.retries }} bounded retr{{ 'y' if r.freshness.retries == 1 else 'ies' }}{% endif %}
+      {% if r.freshness.stale_majority %}· stale majority rejected{% endif %}
+    </span>
+  </div>
+  {% endif %}
+
   <table class="probe-table">
     <thead>
       <tr>
@@ -46,18 +62,24 @@
     </thead>
     <tbody>
       {% for node in probe.nodes %}
-      <tr class="{{ 'row-fault' if node.paused or node.overrides else '' }}">
+      <tr class="{{ 'row-fault' if node.paused or node.overrides or node.dns_frozen else '' }}">
         <td data-label="Target" class="mono">{{ node.node_id }}</td>
         <td data-label="Query source" class="source">{{ node.source }}</td>
         <td data-label="RCODE" class="mono">{{ node.rcode_name }}</td>
         <td data-label="Answer" class="mono answer">{{ node.answer or '—' }}</td>
         <td data-label="Rev / votes" class="tnum" title="revision source: {{ node.revision_source }}">
-          {{ node.dns_revision if node.dns_revision is not none else '—' }}
+          {% if node.packet_revision is defined and node.packet_revision is not none %}
+            {{ node.packet_revision }}<span class="rev-tag">{{ 'signed' if node.packet_signed else 'unsigned' }}</span>
+          {% elif node.dns_revision is defined and node.dns_revision is not none %}
+            {{ node.dns_revision }}<span class="rev-tag">status</span>
+          {% else %}—{% endif %}
         </td>
         <td data-label="Latency" class="tnum">{{ '%.2f'|format(node.latency_ms) }} ms</td>
         <td data-label="State">
           {% if node.paused %}
             <span class="state danger">DNS paused</span>
+          {% elif node.dns_frozen %}
+            <span class="state danger">frozen at rev {{ node.dns_revision }}</span>
           {% elif node.overrides %}
             <span class="state danger">override active</span>
           {% elif node.rcode == -1 %}
@@ -76,16 +98,23 @@
         <td data-label="RCODE" class="mono">{{ r.rcode or 'ERROR' }}</td>
         <td data-label="Answer" class="mono answer">{{ r.answer or '—' }}</td>
         <td data-label="Rev / votes" class="tnum">
-          {% if r.responders %}
+          {% if r.freshness and r.freshness.enabled %}
+            wm {{ r.freshness.watermark if r.freshness.watermark is not none else '—' }}
+            · maj {{ r.freshness.majority_revisions | join(',') if r.freshness.majority_revisions else '—' }}
+          {% elif r.responders %}
             {{ r.votes.values() | reject('equalto', 'no-answer') | list | length }}/{{ r.responders }} answered
           {% else %}—{% endif %}
         </td>
         <td data-label="Latency" class="tnum">{{ '%.2f'|format(r.latency_ms or 0) }} ms</td>
         <td data-label="State">
-          {% if r.ok and r.disagreement %}
+          {% if r.stale %}
+            <span class="state warn">stale answer marked (EDNS 65002)</span>
+          {% elif not r.ok and r.freshness and r.freshness.stale_majority %}
+            <span class="state danger">stale majority; fail closed</span>
+          {% elif r.ok and r.disagreement %}
             <span class="state warn">majority accepted; split vote</span>
           {% elif r.ok %}
-            <span class="state ok">majority accepted</span>
+            <span class="state ok">majority accepted; fresh</span>
           {% else %}
             <span class="state danger">no majority; SERVFAIL</span>
           {% endif %}
@@ -111,12 +140,34 @@
     {% endif %}
   </div>
 
+  {% if r.freshness and r.freshness.enabled %}
+  <div class="probe-trace">
+    <span class="trace-label">revision evidence</span>
+    {% for node_id, revision in r.freshness.revisions.items() %}
+      <span class="vote {{ 'vote-winner' if node_id in r.winner else '' }}">
+        {{ node_id }}={{ revision if revision is not none else '—' }}
+        {% set source = r.freshness.revision_sources.get(node_id) %}
+        {% set error = r.freshness.revision_errors.get(node_id) %}
+        {% if source %}· {{ source }}{% endif %}
+        {% if error %}· {{ error }}{% endif %}
+      </span>
+    {% endfor %}
+    <span class="trace-note">
+      majority revisions {{ r.freshness.majority_revisions | join(',') if r.freshness.majority_revisions else '—' }}
+      · watermark {{ r.freshness.watermark if r.freshness.watermark is not none else '—' }}
+      · {{ r.freshness.reason or '—' }}
+    </span>
+  </div>
+  {% endif %}
+
   <p class="source-note">
     Direct rows are separate UDP queries to each node on udp/5354–5356.
+    A node that understands EDNS option 65001 attaches its committed revision
+    to the DNS packet; the <code>signed</code> tag means the token verifies
+    against that node's configured key. Without a token the console falls back
+    to the node's <code>/status</code> and labels the source.
     The resolver row is a separate decision from <code>/query</code>, which uses
-    the same code path as udp/5353. Revisions come from each node's
-    <code>/status</code>, not from the DNS packet. A direct node answer is not a
-    resolver vote.
+    the same code path as udp/5353. A direct node answer is not a resolver vote.
   </p>
   {% endif %}
 </section>

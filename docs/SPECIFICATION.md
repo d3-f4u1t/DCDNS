@@ -17,7 +17,8 @@ state machine (`dcdns/state.py`) implements and the test suite verifies.
 4. The registry survives the loss of any single node without losing committed
    state or the ability to accept writes.
 5. Committed state is served as standard DNS by every registry node, and clients
-   accept an answer only when a majority of nodes agrees.
+   accept an answer only when a majority of nodes agrees and that majority is
+   fresh relative to the committed revision watermark.
 
 ## 2. Non-goals
 
@@ -260,8 +261,8 @@ entries.
 
 The registry is authoritative for state. DNS is served independently by every
 registry node from that node's committed state, and a client-facing resolver
-requires majority agreement. There is no separate publisher and no central DNS
-front-end.
+requires majority agreement plus revision freshness. There is no separate
+publisher and no central DNS front-end.
 
 **Publication rule.** A name is present in a node's DNS snapshot when the domain
 is not `revoked` and its governing namespace is `active`. Therefore:
@@ -275,25 +276,43 @@ is not `revoked` and its governing namespace is `active`. Therefore:
 **Per-node responder.** Each node runs a UDP responder on its own port
 (`5354`, `5355`, `5356` in the demo). It answers `A` and `ANY` queries, sets the
 authoritative-answer bit, uses a 30-second TTL, returns `NXDOMAIN` for unknown
-names, and returns `NOTIMP` for unsupported types.
+names, and returns `NOTIMP` for unsupported types. Each answer carries the
+node's serving revision, a zone digest and an optional Ed25519 signature in EDNS
+option `65001`.
 
 **Quorum resolver.** The resolver on UDP `5353` forwards the same query to every
 configured node, reduces each response to its semantic content (RCODE plus sorted
-answer records), and returns an answer only if at least a majority agrees (2 of 3
-in the demo). Otherwise it returns `SERVFAIL`. It ignores transaction IDs,
-harmless flags, TTL differences and record order. It has no zone and no keys, so
-it cannot invent an answer.
+answer records), and accepts an answer only if at least a majority agrees (2 of 3
+in the demo). It ignores transaction IDs, harmless flags, TTL differences and
+record order for grouping. It then reads revision evidence from the EDNS token
+(or the node status API as a fallback), computes a committed revision watermark,
+and applies the configured freshness condition:
+
+* **F1** (default): at least one node in the winning majority is at the
+  watermark.
+* **F2**: at least `required` majority nodes are within `delta` of the watermark.
+* **F3**: every majority node is within `delta` of the watermark.
+
+A stale majority is retried up to the configured budget, then the resolver
+returns `SERVFAIL` (default) or a marked-stale answer with EDNS option `65002`
+and a reduced TTL. The resolver has no zone and cannot invent an answer; it may
+hold node public keys to verify revision tokens.
 
 **Failure semantics.** One node down: the remaining two agree and the resolver
-answers. One node lying: the honest two outvote it. Two nodes down or three
-different answers: `SERVFAIL`. Two colluding nodes can produce a majority lie;
-this is the documented boundary of majority trust, because DNSSEC is not
-implemented.
+answers if the majority is fresh. One node lying: the honest two outvote it. Two
+nodes down or three different answers: `SERVFAIL`. A semantically agreeing but
+stale majority is retried, then refused under the default policy. Two colluding
+nodes can produce a majority lie; this is the documented boundary of majority
+trust, because DNSSEC is not implemented. A single node claiming a false high
+revision can force fail-closed behaviour under the `responses` watermark.
 
-**Observability.** Each node reports its DNS revision and zone size. The resolver
-reports `published_revision` (the lowest revision among reachable nodes), query
-counts, `NXDOMAIN`, `SERVFAIL`, disagreements and per-node votes. End-to-end
-propagation is measured in the evaluation suite.
+**Observability.** Each node reports committed revision, serving revision,
+revision lag, frozen state and zone size. The resolver reports
+`published_revision` (the lowest committed revision among reachable nodes),
+`serving_revision`, `watermark`, query counts, `NXDOMAIN`, `SERVFAIL`,
+disagreements, freshness failures, stale-majority queries, retries, stale
+answers and per-node revision evidence. End-to-end propagation is measured in the
+evaluation suite.
 
 ---
 
@@ -338,3 +357,7 @@ each is covered by an automated check:
 12. One lying DNS node cannot change the majority answer.
 13. Without a DNS majority, the resolver returns `SERVFAIL` rather than trusting
     one node.
+14. A semantically agreeing but stale majority is detected, retried, and refused
+    under the default policy rather than served as current.
+15. Revision metadata is bound to the node, revision and zone digest, and an
+    invalid signature fails closed when a key is configured.

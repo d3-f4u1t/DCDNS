@@ -71,7 +71,7 @@ WHY IT IS DIFFERENT
     not operate on DNS wire responses or DNS semantic answer groups.
   - Blockchain DNS systems (Namecoin, Handshake, ENS) consensus on ownership,
     not per-query freshness across independently committed authoritative nodes.
-  - The existing DCDNS prototype does semantic majority voting, but not
+  - The DCDNS prototype implements semantic majority voting and now also
     revision-coherent freshness. The freshness condition is the new part.
 
 BEST CLAIM TYPE
@@ -87,10 +87,11 @@ WHY YOUR COLLEGE MIGHT LIKE IT
     convergence.
 
 STATUS
-  The current DCDNS prototype provides the platform and the semantic majority
-  resolver. The freshness condition, revision metadata, retry policy and
-  stale-majority experiment still need to be implemented to support the
-  disclosure.
+  The current DCDNS prototype provides the platform, the semantic majority
+  resolver, signed EDNS(0) revision metadata, the F1/F2/F3 freshness conditions,
+  the bounded retry and stale policy, and a live stale-majority experiment. The
+  mechanism is implemented and measured locally; prior-art search and legal
+  review remain pending.
 
 
 ================================================================================
@@ -523,21 +524,19 @@ tool.
 
 4.6 The current DCDNS prototype
 -------------------------------
-The prototype already implements:
+The prototype implements:
   - per-node authoritative DNS,
   - semantic majority agreement,
   - one-liar outvoting,
-  - SERVFAIL without a majority.
-
-It does not implement:
-  - revision metadata in DNS responses,
-  - a freshness watermark,
-  - a freshness condition,
+  - SERVFAIL without a majority,
+  - revision metadata in DNS responses (EDNS option 65001, optional signature),
+  - a freshness watermark and F1/F2/F3 freshness conditions,
   - stale-majority detection,
-  - bounded retry on staleness.
+  - bounded retry on staleness, SERVFAIL and marked-stale policies.
 
 The invention is the delta, not the whole prototype. That is important: it gives
-you a specific improvement to claim.
+you a specific improvement to claim. The implementation and measured results are
+documented in docs/RAM_DNS.md.
 
 4.7 Search terms for a real prior-art search
 --------------------------------------------
@@ -634,11 +633,12 @@ project already has the test harness; add one experiment.
 5.8 Demo script for the college
 -------------------------------
   1. Show the normal case: all three nodes agree and the resolver answers.
-  2. Pause two nodes; update through the third.
-  3. Show the current resolver returning the old address (the failure).
-  4. Enable freshness-aware mode; show SERVFAIL instead of the stale answer.
-  5. Let the nodes catch up; show the new address.
-  6. Show the metrics: stale majority detected, retries, final decision.
+  2. Freeze the real DNS snapshots of n1 and n2; update through n3.
+  3. Show the semantic-only resolver returning the old address (the failure).
+  4. Enable RAM-DNS; show SERVFAIL instead of the stale answer.
+  5. Thaw the snapshots; show the new address after convergence.
+  6. Show the metrics: stale majority detected, retries, watermark, final
+     decision.
 
 This demo is much more convincing than "we built a decentralized DNS."
 
@@ -804,9 +804,12 @@ If the college asks for a short "patent idea" note, submit this structure:
    - Current DCDNS: semantic majority, no revision coherence.
 
 7. Prototype evidence
-   - existing 54 tests, 9 cluster checks, 14 portal checks, 11 experiments;
-   - new stale-majority experiment to be added;
-   - metrics for detection, latency and availability.
+   - 97 tests, 9 cluster checks, 14 portal checks, 12 live experiments;
+   - stale-majority experiment implemented and passing;
+   - metrics for detection, retry count, freshness failures and post-thaw
+     convergence;
+   - live run: semantic-only returned the stale address, RAM-DNS returned
+     SERVFAIL at the next revision, new answer served after thaw.
 
 8. Claims
    - one independent method claim,
@@ -820,8 +823,9 @@ If the college asks for a short "patent idea" note, submit this structure:
 
 10. Status
    - platform implemented;
-   - freshness extension proposed and ready to implement;
-   - prior-art search and legal review pending.
+   - freshness extension implemented and measured locally;
+   - prior-art search, IP clearance and legal review pending;
+   - do not publish or push the specific mechanism before clearance.
 
 
 ================================================================================

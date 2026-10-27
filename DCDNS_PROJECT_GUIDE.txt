@@ -35,10 +35,13 @@ manage those names through a web portal.
 The registry is not stored on one server. Three registry nodes replicate a
 signed, ordered log, and a change is accepted only when a majority (2 of 3)
 stores it. Every registry node is also an authoritative DNS server: it answers
-queries from the committed state it holds. A client-facing resolver asks all
-three nodes and returns an answer only when a majority agrees. That means there
-is no single central DNS server to trust, and one lying node cannot change the
-answer a client receives.
+queries from the committed state it holds and attaches its serving revision to
+the answer. A client-facing resolver asks all three nodes, returns an answer
+only when a majority agrees, and then checks that the agreeing majority is fresh
+relative to the committed revision watermark. That means there is no single
+central DNS server to trust, one lying node cannot change the answer a client
+receives, and a semantically agreeing but stale majority is refused instead of
+being served as current.
 
 In one sentence:
 
@@ -96,7 +99,8 @@ for this prototype:
   Level 1: one central registry and one central DNS server.
   Level 2: delegated registry authority, but one DNS publisher/front-end.
   Level 3: every registry node serves DNS from its own committed state, and a
-           client-facing resolver requires majority agreement.  <-- THIS PROJECT
+           client-facing resolver requires majority agreement plus revision
+           freshness.  <-- THIS PROJECT
   Level 4: peer-to-peer discovery / DHT, with no configured membership.
            Not built. It is a different project with different trade-offs.
 
@@ -113,6 +117,7 @@ It demonstrates, in one runnable system:
   - leader takeover and follower catch-up,
   - per-node authoritative DNS,
   - majority agreement over DNS answers,
+  - revision-aware freshness that refuses a stale majority,
   - a real web UI,
   - automated security experiments,
   - honest documentation of limitations.
@@ -135,8 +140,8 @@ test or an experiment behind it.
 - Grant a participant permission to register names in a namespace.
 - View the operation history of a name.
 - View the global audit trail and verify its hash chain.
-- View the health of all nodes, their DNS ports and revisions.
-- See recent DNS queries and how each node voted.
+- View the health of all nodes, their DNS ports, committed and serving revisions.
+- See recent DNS queries, each node's vote, and the freshness decision.
 - Run security experiments from the browser or the command line.
 
 3.2 System features
@@ -149,6 +154,9 @@ test or an experiment behind it.
 - Each node answers DNS on its own UDP port: 5354, 5355 and 5356.
 - A client-facing quorum resolver on UDP 5353.
 - The resolver requires 2 of 3 configured nodes to agree.
+- Each DNS answer carries a signed EDNS(0) revision token (option 65001).
+- The resolver also checks RAM-DNS freshness (F1 by default) against the
+  committed revision watermark; a stale majority is retried, then refused.
 - If no majority agrees, the resolver returns SERVFAIL.
 - A metrics endpoint on http://127.0.0.1:5380/metrics.
 - A portal on http://127.0.0.1:8000.
@@ -1100,10 +1108,14 @@ Two nodes down:
     of 3 configured nodes, so it returns SERVFAIL.
 
 A node with a stale state:
-  - It answers DNS from what it has committed.
+  - It answers DNS from what it has committed, and publishes that serving
+    revision in the EDNS token.
   - If it is the only stale node, the other two outvote it.
-  - If two nodes are stale, the stale answer can win. Majority agreement is not
-    a freshness proof. The dashboard shows revisions so this is visible.
+  - If two nodes are stale, the semantic majority is stale. RAM-DNS compares the
+    majority's revisions with the watermark and fails closed instead of serving
+    the old answer. This is the stale-majority experiment.
+  - The dashboard shows serving revisions, lag, the watermark and the resolver's
+    freshness decision.
 
 13.7 Why is there a leader? Is that not centralization?
 -------------------------------------------------------
@@ -1300,13 +1312,15 @@ Be honest about this:
   - The .test zone is a lab; it is not delegated from the real DNS root.
   - The demo portal holds private keys.
   - The quorum threshold is a configuration choice.
-  - DNSSEC is not implemented, so DNS answers are not cryptographically signed.
+  - DNSSEC is not implemented; the EDNS revision token is an application-layer
+    attestation, not a DNSSEC signature.
 
 What is decentralized:
   - registry state is replicated across independent nodes,
   - namespace administration is delegated,
   - every node serves DNS,
-  - the client answer is decided by majority agreement, not by one server.
+  - the client answer is decided by majority agreement plus revision freshness,
+    not by one server.
 
 14.10 How to query it
 ---------------------
@@ -1328,20 +1342,28 @@ That is the clearest way to demonstrate the majority rule.
 --------------------------------
 http://127.0.0.1:5380/metrics returns JSON:
 
-  published_revision   The lowest revision among reachable nodes. This is a
-                       conservative "everyone has at least this" number. It is
-                       not a publisher revision anymore, despite the name.
+  published_revision   The lowest committed revision among reachable nodes. This
+                       is a conservative "everyone has at least this" number.
+  serving_revision     The lowest serving revision among reachable nodes.
   zone_size            The largest zone reported by a reachable node.
   source               "majority of 2 of 3 nodes".
   queries              Queries received by the resolver.
   answered             Queries that got a majority answer.
   nxdomain             Majority answers that were NXDOMAIN.
-  servfail             Queries with no majority (SERVFAIL returned).
+  servfail             Queries that returned SERVFAIL, including stale-majority
+                       failures.
   disagreements        Queries where the nodes did not all agree (even if a
                        majority still answered).
   quorum               Required votes (2).
-  nodes                Per-node reachability, revision, zone size, overrides.
-  recent               Last queries with per-node votes and the winner.
+  watermark            Committed revision watermark of the last decision.
+  freshness            Policy (condition, delta, watermark source, stale policy,
+                       retry budget) and counters: stale_majority_queries,
+                       freshness_failures, stale_answers, retries,
+                       missing_revision, invalid_revision, last_reason.
+  nodes                Per-node reachability, committed revision, serving
+                       revision, lag, frozen state, zone size, overrides.
+  recent               Last queries with per-node votes, revision evidence,
+                       watermark, freshness reason and retries.
 
 A disagreement is not necessarily a failure. It means the nodes did not speak
 with one voice; the majority answer may still be correct. A SERVFAIL means no
@@ -1378,6 +1400,46 @@ cryptographically. It is not implemented. In a production system, signed zone
 snapshots or DNSSEC would reduce reliance on majority trust. This is a clear
 future-work item and a good answer to "how do you know a node did not lie?":
 "One node is outvoted by majority; for cryptographic proof we would add DNSSEC."
+
+14.14 What is RAM-DNS?
+----------------------
+RAM-DNS means revision-aware majority DNS. It is the freshness rule added on top
+of the semantic majority.
+
+The problem:
+  - n1 and n2 are at revision 10 and answer 10.20.5.42.
+  - n3 is at revision 11 and answers 10.20.5.99.
+  - n1 and n2 are a semantic majority, so the old answer wins.
+  - They are not lying; they are serving a real older committed snapshot.
+
+The mechanism:
+  - Each node attaches its serving revision, a zone digest and an optional
+    Ed25519 signature to the DNS answer in EDNS option 65001.
+  - The resolver computes a watermark from the responses (by default the
+    highest revision observed).
+  - It then applies a freshness condition to the winning majority:
+      F1: at least one majority node is at the watermark (default),
+      F2: a quorum of the majority is within a bounded lag,
+      F3: every majority node is within a bounded lag.
+  - A stale majority is retried a bounded number of times. If it stays stale,
+    the resolver returns SERVFAIL (default) or an explicitly marked stale answer
+    with EDNS option 65002 and a reduced TTL.
+
+What it does not do:
+  - It is not BFT. Two colluding nodes can still form a false majority.
+  - It does not replace DNSSEC. The token is an application-layer attestation,
+    not a DNSSEC signature.
+  - A single node claiming a fake high revision can force fail-closed behaviour
+    under the responses watermark; signed tokens identify the claimant but do
+    not make the claim true.
+  - If no responder has seen a newer commit, a response-based watermark cannot
+    know about it.
+
+The live stale-majority experiment freezes n1 and n2 at a real committed
+snapshot, commits a new address, waits for n3 to serve it, and compares the
+semantic-only resolver with RAM-DNS. The semantic-only resolver returns the old
+address; RAM-DNS returns SERVFAIL at the newer watermark. After thaw, the new
+answer is served. See docs/RAM_DNS.md for the wire format and results.
 
 
 ================================================================================
@@ -1489,7 +1551,10 @@ Lying DNS node
   Attack: one node returns a forged A record.
   Mitigation: the quorum resolver compares all three answers and requires two to
   agree. One liar is outvoted.
-  Residual: two colluding nodes can lie; DNSSEC is not implemented.
+  Residual: two colluding nodes can lie; DNSSEC is not implemented. A single node
+  can also claim a fake high revision and force fail-closed behaviour under the
+  responses watermark; signed tokens identify the claimant but do not make the
+  claim true.
   Test: quorum_dns experiment.
 
 15.4 Trust boundaries
@@ -1499,7 +1564,7 @@ Lying DNS node
   any client  --signed op-->  [ verify signature ]  -->  state machine
   any client  --signed op-->  [ namespace policy ]  -->  state machine
   follower    --append RPC->  [ term / log rules ]  -->  replicated log
-  DNS client  --query------>  [ 2-of-3 agreement ]  -->  answer or SERVFAIL
+  DNS client  --query------>  [ 2-of-3 agreement + freshness ]  -->  answer or SERVFAIL
 
 The registry never trusts the transport. A node that receives an operation
 verifies it itself; it does not rely on the forwarding node having done so.
@@ -1819,22 +1884,23 @@ nslookup feature). Use python -m dcdns.dig. On Linux/macOS, dig @127.0.0.1 -p
   python scripts/cluster_smoke.py     Requires the live demo to be stopped.
 
 Latest results:
-  60/60 tests
+  97/97 tests
   9/9 cluster checks
   14/14 portal flow checks
-  11/11 live experiments
+  12/12 live experiments
 
 
 ================================================================================
 19. EVIDENCE: WHAT HAS BEEN PROVEN
 ================================================================================
 
-19.1 Unit and wire tests: 60/60
+19.1 Unit and wire tests: 97/97
 -------------------------------
 - 33 state-machine and authorization tests.
 - 10 DNS wire-format tests.
 - 13 quorum-resolver and per-node responder tests.
-- 4 console-control tests (gating, pause, reset, unreachable reset).
+- 36 RAM-DNS freshness, token, retry and freeze tests.
+- 5 console-control tests (gating, pause, reset, freeze, unreachable reset).
 
 They cover:
   - signature verification and tampering,
@@ -1855,7 +1921,12 @@ They cover:
   - per-node responder overrides,
   - DNS pause dropping datagrams without stopping the registry node,
   - resolver /query vote map using the same decision path as UDP,
-  - portal fault-control gating and reset.
+  - portal fault-control gating and reset,
+  - EDNS revision token round-trip, signature and zone-digest binding,
+  - F1/F2/F3 freshness conditions and watermark sources,
+  - bounded retries, SERVFAIL and marked-stale policies,
+  - missing/invalid revision metadata and status fallback,
+  - real snapshot freeze and thaw with pinned revision/NXDOMAIN.
 
 19.2 Cluster integration: 9/9
 -----------------------------
@@ -1886,7 +1957,7 @@ Drives the actual HTTP forms:
   - new owner revokes,
   - revoked name withdrawn from DNS.
 
-19.4 Live experiments: 11/11
+19.4 Live experiments: 12/12
 ----------------------------
 1. Duplicate registration -> NAME_TAKEN.
 2. Forged record update -> UNAUTHORIZED, record unchanged.
@@ -1899,14 +1970,20 @@ Drives the actual HTTP forms:
 9. Revocation -> withdrawn from DNS.
 10. DNS propagation -> new answer live quickly.
 11. Majority DNS resists a lying node -> quorum honest, n3 forged.
+12. Stale majority -> semantic-only returns the old address; RAM-DNS returns
+    SERVFAIL at the newer watermark, then serves the new answer after thaw.
 
 19.5 Latest measured values
 ---------------------------
 From the last live run (these vary with machine load):
-  - DNS propagation: about 0.20 s after the client response.
-  - Revocation withdrawal: about 0.11 s.
-  - Commit latency: about 422 ms.
-  - Quorum DNS: n3 returned 10.20.5.66, quorum returned 10.20.5.124.
+  - DNS propagation: about 0.31 s after the client response.
+  - Revocation withdrawal: about 0.20 s.
+  - Commit latency: under 1 ms for the measured write; slower runs are dominated
+    by the 0.25 s replication tick.
+  - Quorum DNS: n3 returned 10.20.5.66, quorum returned 10.20.5.123.
+  - Stale majority: semantic-only returned the old address from a frozen
+    majority; RAM-DNS saw a watermark one revision ahead and returned SERVFAIL
+    after its bounded retries; the new answer was served after thaw.
 
 Do not present these as universal benchmarks. They are observations on one
 laptop with three processes. The point is the mechanism, not the exact number.
@@ -1919,7 +1996,9 @@ that carries weight is:
     follower,
   - a write is refused when a majority is unavailable,
   - a node that missed entries converges to exactly the committed revision,
-  - one lying DNS node cannot change the majority answer.
+  - one lying DNS node cannot change the majority answer,
+  - a semantically agreeing but stale majority is refused instead of served as
+    current.
 
 19.7 Threats to validity
 ------------------------
@@ -2025,13 +2104,15 @@ A: "No. There are no blocks, mining, tokens or proof-of-work. It is a permission
 Q5. Is it truly decentralized?
 A: "It is decentralized in four specific ways: namespace authority is delegated,
    state is replicated across independent nodes, every node serves DNS, and the
-   client answer is decided by majority agreement. It is not decentralized in
-   membership discovery, root trust, or key custody. We are precise about that."
+   client answer is decided by majority agreement plus a revision freshness check.
+   It is not decentralized in membership discovery, root trust, or key custody. We
+   are precise about that."
 
 Q6. What exactly is decentralized?
 A: "Authority: the root delegates subtrees to departments. Data: three nodes hold
    the log. DNS serving: each node has its own responder. DNS decision: the
-   resolver requires 2 of 3 agreement. What is not decentralized: the root trust
+   resolver requires 2 of 3 agreement and a fresh majority. What is not
+   decentralized: the root trust
    anchor, the configured node set, and the demo portal's key custody."
 
 Q7. What is still centralized?
@@ -2071,10 +2152,12 @@ A: "For DNS, the other two outvote it; the resolver returns the honest majority
    endpoint: n3 returns 10.20.5.66, the resolver returns the honest address."
 
 Q13. What if two nodes lie?
-A: "Then they are the majority and the resolver accepts their answer. That is the
-   honest boundary of majority trust. DNSSEC or signed zone snapshots would be
-   needed for cryptographic proof, and we have not implemented that. We say so
-   rather than claiming Byzantine tolerance."
+A: "Then they are the majority and the resolver accepts their semantic answer. RAM-DNS
+   does not fix that: if the colluding majority also claims a current revision, it
+   is indistinguishable from an honest current majority. That is the honest boundary
+   of majority trust. DNSSEC or signed zone snapshots would be needed for
+   cryptographic proof, and we have not implemented that. We say so rather than
+   claiming Byzantine tolerance."
 
 Q14. What if two nodes are down?
 A: "The remaining node is isolated: it cannot commit writes and returns NO_QUORUM.
@@ -2085,16 +2168,20 @@ A: "The remaining node is isolated: it cannot commit writes and returns NO_QUORU
 Q15. How does the DNS resolver choose an answer?
 A: "It sends the same query to all three node responders, reduces each response to
    its semantic content (RCODE plus answer records), groups identical answers, and
-   returns one only if at least two nodes are in the same group. Otherwise it
-   returns SERVFAIL. It ignores transaction IDs, harmless flags, TTL differences
-   and record order."
+   returns one only if at least two nodes are in the same group. It ignores
+   transaction IDs, harmless flags, TTL differences and record order. It then reads
+   the serving revision from each answer's EDNS token, computes the committed
+   revision watermark, and applies the F1 freshness condition to the winning
+   majority. A stale majority is retried a bounded number of times, then refused
+   with SERVFAIL (or marked stale if that policy is selected)."
 
 Q16. Is the resolver a single point of failure?
 A: "It is a single process in the demo, but not a single point of authority. It
-   has no zone and no keys; it cannot invent an answer. Clients can query any node
-   directly, and you can run multiple resolvers. If it dies, clients pointed at it
-   fail, but no registry data is lost. In production the resolver function would
-   be replicated or built into clients."
+   has no zone and cannot invent an answer. It may hold node public keys to verify
+   revision tokens, but those keys do not let it change the answer. Clients can
+   query any node directly, and you can run multiple resolvers. If it dies, clients
+   pointed at it fail, but no registry data is lost. In production the resolver
+   function would be replicated or built into clients."
 
 Q17. How do you stop someone registering someone else's name?
 A: "The signer must be authorized in the governing namespace: the controller, the
@@ -2152,20 +2239,25 @@ A: "A permissioned campus registry does not need mining or open membership. A
 
 Q26. Why not DNSSEC?
 A: "DNSSEC signs DNS answers; our Ed25519 signatures sign registry operations.
-   They solve different problems. DNSSEC is future work. Today the DNS layer uses
-   majority agreement, not cryptographic answer verification. That is a documented
-   limitation."
+   They solve different problems. DNSSEC is future work. The DNS layer uses
+   majority agreement plus a signed revision token that proves which node made a
+   freshness claim. The token is not a DNSSEC signature and does not give
+   cryptographic proof of the answer to an ordinary resolver. That is a
+   documented limitation."
 
 Q27. How do you know it works?
-A: "Three layers of evidence: 59 unit and wire tests, 9 cluster failure/recovery
-   checks with real processes, 14 portal flow checks, and 11 live security
-   experiments. The experiments are the same code the portal buttons call, so the
-   report cannot drift from the demo."
+A: "Four layers of evidence: 97 unit and wire tests, 9 cluster failure/recovery
+   checks with real processes, 14 portal flow checks, and 12 live security
+   experiments, including the stale-majority experiment. The experiments are the
+   same code the portal buttons call, so the report cannot drift from the demo."
 
 Q28. What are the biggest limitations?
-A: "No Byzantine registry consensus; two colluding DNS nodes can lie; static
-   membership; no real network partition testing; no key recovery; only IPv4 A
-   records; no DNSSEC; demo keys on the portal. All are documented."
+A: "No Byzantine registry consensus; two colluding DNS nodes can lie; a single
+   node can raise the response watermark with a fake high revision and force
+   fail-closed behaviour; the watermark can only reflect commits some responder
+   has seen; static membership; no real network partition testing; no key
+   recovery; only IPv4 A records; no DNSSEC; demo keys on the portal. All are
+   documented."
 
 Q29. What would production need?
 A: "Proven consensus (Raft/etcd or BFT if malicious nodes are in scope), mutual
@@ -2230,9 +2322,10 @@ A: "Registry state and audit are public inside the lab: names, owners (public
 
 Q40. What is the novel or interesting part?
 A: "The combination: delegated namespace authority, signed operations, quorum
-   replication, per-node DNS serving, and client-side majority agreement. It is
-   not just a replicated database and not just a DNS server; it connects the
-   governance layer to the resolution layer and demonstrates the failure cases."
+   replication, per-node DNS serving, client-side majority agreement, and
+   revision-aware freshness that refuses a stale majority. It is not just a
+   replicated database and not just a DNS server; it connects the governance layer
+   to the resolution layer and demonstrates the failure cases."
 
 Q41. What did you learn?
 A: "That the hard part of a registry is authority and failure semantics, not
@@ -2271,10 +2364,12 @@ A: "Three registry nodes in a mesh, each with its own DNS port. A client resolve
 ------------------------
 "DCDNS is a permissioned campus DNS registry. The root delegates namespaces to
 departments; every change is signed with Ed25519 and committed by a majority of
-three nodes. Each node also serves DNS from its own committed state, and a client
-resolver accepts an answer only when two of three nodes agree. So there is no
-central DNS server to trust, and one lying node cannot change the answer. It is
-a working prototype with a portal, 60 tests, 9 cluster checks and 11 live
+three nodes. Each node also serves DNS from its own committed state and attaches
+its serving revision to the answer. A client resolver accepts an answer only when
+two of three nodes agree and that majority is fresh relative to the committed
+revision watermark. So there is no central DNS server to trust, one lying node
+cannot change the answer, and a stale majority is refused instead of served. It
+is a working prototype with a portal, 97 tests, 9 cluster checks and 12 live
 experiments."
 
 22.2 Two-minute pitch
@@ -2293,15 +2388,19 @@ dies, another takes over; if two die, writes stop rather than diverge.
 The DNS part is what makes this more than a replicated database. Every registry
 node is also an authoritative DNS server, on its own port. There is no separate
 DNS publisher. A client-facing resolver sends each query to all three nodes and
-returns an answer only when two agree. One node can lie or be stale; the majority
-wins. If two nodes are down, the resolver returns SERVFAIL rather than trusting
-one node.
+returns an answer only when two agree. Each answer carries the node's serving
+revision in a signed EDNS token. The resolver compares the winning majority
+against the committed revision watermark: if the majority is stale, it retries,
+then returns SERVFAIL instead of presenting old data as current. One node can lie;
+the majority wins. If two nodes are down, the resolver returns SERVFAIL rather
+than trusting one node.
 
 The honest boundaries: the root trust anchor remains, membership is configured,
 the registry consensus is not Byzantine-fault-tolerant, two colluding DNS nodes
-can lie, and DNSSEC is not implemented. We document those rather than hiding
-them. The evidence is 60 tests, 9 cluster failure checks, 14 portal flow checks
-and 11 live experiments, including a lying-node demo."
+can lie, the watermark can only reflect commits some responder has seen, and
+DNSSEC is not implemented. We document those rather than hiding them. The
+evidence is 97 tests, 9 cluster failure checks, 14 portal flow checks and 12 live
+experiments, including a lying-node demo and a real stale-majority freeze."
 
 22.3 Technical two-minute pitch
 -------------------------------
@@ -2316,17 +2415,20 @@ majority stores it; the state applies committed entries and refreshes a flat DNS
 snapshot.
 
 The DNS plane is per-node. Each node runs a UDP responder on its own port and
-answers from its committed snapshot with a 30-second TTL. The client resolver
-queries all configured nodes, reduces responses to RCODE plus sorted answer
-records, and requires 2 of 3 agreement. It ignores transaction IDs, flags, TTLs
-and record order. No majority means SERVFAIL. The resolver has no zone and no
-keys; it is a comparison point, not an authority.
+answers from its committed snapshot with a 30-second TTL, attaching its serving
+revision, a zone digest and an optional Ed25519 signature in EDNS option 65001.
+The client resolver queries all configured nodes, reduces responses to RCODE plus
+sorted answer records, and requires 2 of 3 agreement. It ignores transaction IDs,
+flags, TTLs and record order. It then applies F1/F2/F3 freshness over the winning
+majority relative to the watermark; a stale majority is retried and then refused
+with SERVFAIL. No majority means SERVFAIL. The resolver has no zone and no
+authority; it is a comparison point.
 
 The trade-offs are explicit: single-writer coordinator for ordering, no BFT, no
 dynamic membership, no log compaction, no DNSSEC, no AAAA. The evidence includes
-wire-level tests, majority tests, a real three-process cluster smoke test with
-leader failover and catch-up, and a chaos experiment where one node lies and is
-outvoted."
+wire-level tests, majority and freshness tests, a real three-process cluster smoke
+test with leader failover and catch-up, a chaos experiment where one node lies and
+is outvoted, and a stale-majority experiment with real frozen snapshots."
 
 
 ================================================================================
@@ -2501,7 +2603,7 @@ If you remember nothing else, remember these:
 10. "The root trust anchor remains, membership is configured, consensus is not
     Byzantine-fault-tolerant, and DNSSEC is not implemented."
 
-11. "The evidence is 60 tests, 9 cluster checks, 14 portal checks and 11 live
+11. "The evidence is 97 tests, 9 cluster checks, 14 portal checks and 12 live
     experiments."
 
 12. "The project is about authority and failure semantics, not just storing rows."
@@ -2544,15 +2646,16 @@ Before questions
 ----------------
 [ ] Say the honest boundary before someone asks: permissioned, root anchor,
     not BFT, two colluding DNS nodes can lie, no DNSSEC.
-[ ] Have the numbers ready: 60/60, 9/9, 14/14, 11/11.
+[ ] Have the numbers ready: 97/97, 9/9, 14/14, 12/12.
 [ ] Have the ports ready: 8000 portal, 9101-9103 APIs, 5354-5356 node DNS,
     5353 quorum DNS, 5380 metrics.
 
 The three sentences to end on
 -----------------------------
 "Authority is delegated, state is replicated, and every node serves DNS. Clients
-accept an answer only when a majority agrees. The root trust anchor and the
-non-Byzantine consensus are the honest boundaries we document."
+accept an answer only when a majority agrees and that majority is fresh relative
+to the committed revision. The root trust anchor, the non-Byzantine consensus
+and the response-only watermark are the honest boundaries we document."
 
 
 ================================================================================

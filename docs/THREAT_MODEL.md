@@ -124,9 +124,28 @@ and returns an answer only when at least two nodes return semantically identical
 results. One liar is outvoted and the disagreement is recorded in metrics.
 *Residual:* two colluding nodes can form a lying majority. DNSSEC or signed zone
 snapshots are not implemented, so the resolver cannot prove an answer
-cryptographically.
+cryptographically. The signed EDNS revision token proves which node made a
+revision claim; it does not prove the answer itself.
 *Test:* experiment *Majority DNS resists a lying node*, plus
 `tests/test_quorum_resolver.py`.
+
+### T14 — Stale majority
+*Attack/fault:* two nodes agree on an old answer while the third has already
+applied a newer committed revision. The stale nodes are not lying; they are
+serving a real older snapshot.
+*Mitigation:* each answer carries the serving revision in EDNS option `65001`.
+After the semantic majority is found, the resolver computes a committed revision
+watermark and applies F1/F2/F3 to the majority. A stale majority is retried a
+bounded number of times, then refused with `SERVFAIL` (default) or returned with
+a stale marker (EDNS option `65002`) and a reduced TTL.
+*Residual:* the watermark can only reflect commits that some responder has seen.
+A single node can raise the `responses` watermark with a false high revision and
+force fail-closed behaviour; `watermark=quorum` resists that but cannot detect a
+stale majority. A stale majority that omits revision tokens entirely is accepted
+under the default lenient metadata policy; `--require-revision` fails closed.
+RAM-DNS is not BFT.
+*Test:* experiment *Stale majority is detected, not served*, plus
+`tests/test_ram_dns.py`.
 
 ### T13 — DNS availability without a majority
 *Attack/fault:* two nodes are down and only one responder is reachable.
@@ -147,7 +166,7 @@ deliberate availability trade-off.
   any client  --signed op-->  [ verify signature ]  -->  state machine
   any client  --signed op-->  [ namespace policy ]  -->  state machine
   follower    --append RPC->  [ term / log rules ]  -->  replicated log
-  DNS client  --query------>  [ 2-of-3 semantic agreement ] --> answer or SERVFAIL
+  DNS client  --query------>  [ 2-of-3 agreement + freshness ] --> answer or SERVFAIL
 ```
 
 The registry never trusts the transport. A node that receives an operation
@@ -164,6 +183,9 @@ verifies it itself; it does not rely on the forwarding node having done so.
 | Owner key loss (no recovery) | High | Documented; break-glass policy specified, not built |
 | Byzantine node | High | Out of scope; explicitly not claimed |
 | Two colluding DNS nodes | High | Majority trust boundary; DNSSEC/signed zones not built |
+| Stale majority | High | Detected by RAM-DNS F1/F2/F3; fails closed after bounded retries |
+| Single false-high revision | Medium | Can force fail-closed under `responses` watermark; signed tokens identify the claimant, `quorum` watermark is an alternative |
+| Watermark completeness | Medium | Response-based watermark cannot see a commit no responder has seen |
 | Portal holds private keys | High in production | Demo-only; documented in the UI |
 | Nonce table grows unbounded | Low | Acceptable at prototype scale |
 | Log never compacted | Low | Acceptable at prototype scale |
@@ -178,7 +200,8 @@ verifies it itself; it does not rely on the forwarding node having done so.
 * That the system eliminates central authority. The root authority remains.
 * That it resists a malicious registry node.
 * That two colluding DNS nodes cannot lie.
-* That DNS answers are cryptographically signed. DNSSEC is not implemented.
+* That DNS answers are DNSSEC-signed. The EDNS revision token attests revision
+  metadata, not the answer; DNSSEC is not implemented.
 * That it is a production PKI. Key enrolment and recovery are specified, not
   implemented.
 * That every client can resolve these names. Only clients pointed at the lab

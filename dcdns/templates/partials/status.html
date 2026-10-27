@@ -7,6 +7,7 @@
 {% set dns_capacity = dns_configured - (dns_paused | length) %}
 {% set dns_possible = dns and dns_capacity >= dns.quorum %}
 {% set lag = revision - (dns.published_revision if dns else 0) %}
+{% set fresh = dns.freshness if dns and dns.freshness else none %}
 
 {% if faults %}
 <div class="fault-banner">
@@ -17,6 +18,8 @@
         <span class="fault-item">
           {% if fault.kind == 'dns_paused' %}
             {{ fault.node_id }} DNS paused
+          {% elif fault.kind == 'dns_frozen' %}
+            {{ fault.node_id }} DNS frozen: {{ fault.detail }}
           {% else %}
             {{ fault.node_id }} forged: {{ fault.detail }}
           {% endif %}
@@ -58,9 +61,11 @@
     </span>
   </div>
   <div class="summary-item">
-    <span class="summary-label">registry → DNS lag</span>
-    <span class="summary-value tnum {{ 'warn' if lag > 0 else '' }}">
-      {% if dns %}{{ lag }} rev{% else %}—{% endif %}
+    <span class="summary-label">freshness</span>
+    <span class="summary-value {{ 'warn' if fresh and fresh.freshness_failures else ('ok' if fresh and fresh.enabled else '') }}">
+      {% if fresh and fresh.enabled %}
+        {{ fresh.condition }}{% if fresh.watermark is not none %} · wm {{ fresh.watermark }}{% endif %}
+      {% elif dns %}off{% else %}—{% endif %}
     </span>
   </div>
   <div class="summary-item">
@@ -102,12 +107,22 @@
       </tr>
       {% if node.dns and node.dns.enabled %}
       <tr><th scope="row">DNS endpoint</th><td class="mono">udp/{{ node.dns.port }}</td></tr>
-      <tr><th scope="row">DNS rev</th><td class="tnum">{{ node.dns.revision }}</td></tr>
+      <tr><th scope="row">DNS serving rev</th>
+        <td class="tnum {{ 'warn' if node.dns.revision_lag else '' }}">
+          {{ node.dns.serving_revision if node.dns.serving_revision is defined and node.dns.serving_revision is not none else node.dns.revision }}
+          {% if node.dns.revision_lag %}<span class="muted"> · lag {{ node.dns.revision_lag }}</span>{% endif %}
+        </td>
+      </tr>
+      <tr><th scope="row">revision token</th>
+        <td>{{ 'signed' if node.dns.signed else 'unsigned' }}</td>
+      </tr>
       <tr><th scope="row">zone size</th><td class="tnum">{{ node.dns.zone_size }}</td></tr>
       <tr><th scope="row">DNS queries</th><td class="tnum">{{ node.dns.queries }}</td></tr>
       <tr><th scope="row">DNS state</th>
         <td>
-          {% if node.dns.paused %}
+          {% if node.dns.frozen %}
+            <span class="state danger">frozen at rev {{ node.dns.frozen_revision }}</span>
+          {% elif node.dns.paused %}
             <span class="state danger">paused · drops queries</span>
           {% elif node.dns.overrides %}
             <span class="state danger">override active</span>
@@ -150,6 +165,14 @@
         <button type="submit">Clear forged answer</button>
       </form>
       {% endif %}
+      <form method="post" action="/demo/fault/freeze" class="inline-form">
+        <input type="hidden" name="node" value="{{ node.node_id }}">
+        <input type="hidden" name="frozen" value="{{ '0' if node.dns.frozen else '1' }}">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="{{ 'primary' if node.dns.frozen else '' }}">
+          {{ 'Thaw DNS snapshot' if node.dns.frozen else 'Freeze DNS snapshot' }}
+        </button>
+      </form>
     </div>
     {% endif %}
     {% else %}
@@ -170,8 +193,12 @@
       {% if dns %}
         {% if not dns_possible %}
           <span class="node-role danger">quorum impossible</span>
+        {% elif fresh and fresh.stale_majority_queries %}
+          <span class="node-role danger">stale majority detected</span>
         {% elif dns_paused or dns_forced %}
           <span class="node-role danger">fault injected</span>
+        {% elif fresh and fresh.enabled %}
+          <span class="node-role accent">{{ fresh.condition }} freshness</span>
         {% endif %}
       {% else %}
         <span class="node-role danger">metrics unreachable</span>
@@ -184,6 +211,24 @@
       <tr><th scope="row">decision rule</th><td class="mono">{{ dns.source }}</td></tr>
       <tr><th scope="row">required</th><td class="tnum">{{ dns.quorum }} of {{ dns.nodes | length }}</td></tr>
       <tr><th scope="row">published rev</th><td class="tnum">{{ dns.published_revision }}</td></tr>
+      <tr><th scope="row">freshness</th>
+        <td class="mono">
+          {% if fresh and fresh.enabled %}{{ fresh.condition }} · Δ{{ fresh.delta }}{% else %}off{% endif %}
+        </td>
+      </tr>
+      <tr><th scope="row">watermark</th>
+        <td class="tnum">
+          {{ fresh.watermark if fresh and fresh.watermark is not none else '—' }}
+          {% if fresh and fresh.enabled %}<span class="muted"> · {{ fresh.watermark_source }}</span>{% endif %}
+        </td>
+      </tr>
+      <tr><th scope="row">stale majority</th>
+        <td class="tnum {{ 'warn' if fresh and fresh.stale_majority_queries else '' }}">
+          {{ fresh.stale_majority_queries if fresh else 0 }}
+        </td>
+      </tr>
+      <tr><th scope="row">freshness failures</th><td class="tnum">{{ fresh.freshness_failures if fresh else 0 }}</td></tr>
+      <tr><th scope="row">bounded retries</th><td class="tnum">{{ fresh.retries if fresh else 0 }}</td></tr>
       <tr><th scope="row">zone size</th><td class="tnum">{{ dns.zone_size }}</td></tr>
       <tr><th scope="row">queries</th><td class="tnum">{{ dns.queries }}</td></tr>
       <tr><th scope="row">SERVFAIL</th><td class="tnum">{{ dns.servfail }}</td></tr>
@@ -196,6 +241,13 @@
       whether its DNS responder answers.
       {% if dns_paused %}
         <span class="danger">Paused: {{ dns_paused | map(attribute='node_id') | join(', ') }}.</span>
+      {% endif %}
+      {% if fresh and fresh.enabled %}
+        Semantic majority plus {{ fresh.condition }} freshness: the winning answer
+        must be current relative to the watermark. A stale majority is retried
+        {{ fresh.retry_budget }}×, then
+        {{ 'returned as an explicitly marked stale answer' if fresh.stale_policy == 'marked-stale' else 'failed closed with SERVFAIL' }}.
+        {% if fresh.last_reason %}<span class="mono">last: {{ fresh.last_reason }}</span>.{% endif %}
       {% endif %}
     </div>
     {% else %}
@@ -242,14 +294,30 @@
       <span class="mono small">
         {% if dns %}
           {% for item in dns.nodes %}
-            {{ item.node_id }}:{{ 'paused' if item.paused else ('forged' if item.overrides else 'normal') }}{% if not loop.last %} · {% endif %}
+            {{ item.node_id }}:{{ 'paused' if item.paused else ('frozen' if item.frozen else ('forged' if item.overrides else 'normal')) }}{% if not loop.last %} · {% endif %}
           {% endfor %}
         {% else %}—{% endif %}
       </span>
     </div>
+    <div class="row mt">
+      <span class="small muted">freshness</span>
+      <span class="mono small">
+        {% if fresh and fresh.enabled %}
+          {{ fresh.condition }} · watermark {{ fresh.watermark if fresh.watermark is not none else '—' }}
+          · source {{ fresh.watermark_source }}
+        {% else %}off (semantic majority only){% endif %}
+      </span>
+      <span class="spacer"></span>
+      <span class="small muted">
+        stale {{ fresh.stale_majority_queries if fresh else 0 }}
+        · retries {{ fresh.retries if fresh else 0 }}
+      </span>
+    </div>
     <div class="source-note">
-      The resolver decides from semantic DNS answers, not from this metrics
-      poll. The query panel above shows the actual per-query votes.
+      The resolver first requires a semantic majority, then checks the committed
+      revision attached to those answers. It decides from live DNS responses, not
+      from this metrics poll. The query panel above shows the actual per-query
+      votes and revision evidence.
     </div>
   </section>
 </div>

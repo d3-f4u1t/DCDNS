@@ -58,14 +58,20 @@ what clients see.
 **Decision.** Implement a small DNS wire engine (`dns_server.py`), run an
 authoritative responder inside every registry node (`dns_node.py`), and put a
 client-facing majority resolver (`quorum_resolver.py`) in front of the node set.
-Each node serves its own committed DNS snapshot. The resolver asks all
-configured nodes and returns an answer only when at least 2 of 3 agree.
+Each node serves its own committed DNS snapshot and attaches its serving revision
+to the answer as a signed EDNS(0) token. The resolver asks all configured nodes,
+returns an answer only when at least 2 of 3 agree, and then checks that the
+winning majority is fresh relative to the committed revision watermark.
 
 **Why.**
 
 * **No central DNS trust.** A single publisher or front-end is a single point of
   failure and a single point of lies. With per-node serving, the client answer is
   decided by majority agreement over independent committed states.
+* **Freshness.** Majority agreement alone can select a stale group of nodes that
+  agree on an older committed snapshot. The per-answer revision token lets the
+  resolver compare the majority against a watermark and fail closed instead of
+  presenting old data as current.
 * **Publication semantics.** The CoreDNS plugin serves whatever key exists at a
   path. It has no concept of `pending_transfer` or `revoked`, so a
   retained-but-revoked key would still answer. The registry needs a publication
@@ -84,12 +90,15 @@ configured nodes and returns an answer only when at least 2 of 3 agree.
 * We implement name parsing and response encoding ourselves (~200 lines) and
   must get compression pointers and RCODEs right. This is covered by wire-level
   tests.
-* The quorum resolver is one process in the demo. It has no zone and no keys, so
-  it cannot invent an answer, but clients pointed at it depend on it being up.
-  Multiple resolvers can be run; in production the comparison would be
-  replicated or built into stub resolvers.
+* The quorum resolver is one process in the demo. It has no zone and cannot
+  invent an answer, but clients pointed at it depend on it being up. It may hold
+  node public keys to verify revision tokens; those keys cannot change an answer.
+  Multiple resolvers can be run; in production the comparison would be replicated
+  or built into stub resolvers.
 * **Majority trust is the boundary.** One lying node is outvoted; two colluding
-  nodes can lie. There is no DNSSEC, so answers are not cryptographically signed.
+  nodes can lie. RAM-DNS detects a stale majority but cannot defeat a colluding
+  majority. There is no DNSSEC, so answers are not cryptographically signed; the
+  revision token attests revision metadata, not the answer.
 * No zone transfers, no recursive resolution, no `AAAA`/`TXT`.
 * Each node is authoritative for one zone and one record type.
 
@@ -181,9 +190,9 @@ names.py      pure functions: syntax and record policy
 state.py      pure state machine: apply(operation) -> result | error
 cluster.py    I/O and ordering only; calls state.apply; publishes DNS snapshots
 node.py       HTTP surface and DNS responder lifecycle; no business rules
-dns_server.py DNS wire format and query engine; reads a committed snapshot only
-dns_node.py   per-node UDP responder; reads the node's committed snapshot
-quorum_resolver.py  client-side majority comparison; no zone and no keys
+dns_server.py DNS wire format, query engine, EDNS revision token; reads a committed snapshot only
+dns_node.py   per-node UDP responder; reads the node's committed snapshot; optional token signing
+quorum_resolver.py  client-side majority + freshness decision; no zone
 experiments.py shared by portal and CLI so evidence cannot drift
 ```
 
@@ -203,5 +212,6 @@ every node applies it and every test can reach it.
 | No key recovery | Lost owner key means lost domain | 2-of-3 root break-glass, audited |
 | Single record type | Limited DNS usefulness | `AAAA`, `TXT`, `CNAME` with per-type validation |
 | In-memory read path | Reads may be stale on followers | Lease-based linearizable reads |
+| Response-only watermark | A commit no responder has seen cannot raise it | Coordinate with the write path or use a trusted revision source |
 | Majority DNS trust | Two colluding nodes can lie | DNSSEC or signed zone snapshots |
 | One resolver process in the demo | Clients pointed at it depend on it | Replicate the resolver or compare in the stub |

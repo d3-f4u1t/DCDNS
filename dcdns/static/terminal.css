@@ -864,6 +864,40 @@ html.terminal-page .probe-verdict.danger .verdict-answer {
   color: var(--red);
 }
 
+html.terminal-page .probe-freshness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--cyan);
+  background: var(--surface-inset);
+}
+
+html.terminal-page .probe-fresh {
+  color: var(--text);
+  font-size: var(--fs-label);
+  letter-spacing: 0.04em;
+}
+
+html.terminal-page .probe-fresh.ok {
+  color: var(--green);
+}
+
+html.terminal-page .probe-fresh.danger {
+  color: var(--red);
+}
+
+html.terminal-page .rev-tag {
+  margin-left: 5px;
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 html.terminal-page .probe-table {
   width: 100%;
   border-collapse: collapse;
@@ -1202,6 +1236,10 @@ html.terminal-page .node-facts td.ok {
 }
 
 html.terminal-page .node-facts td.danger {
+  color: var(--red);
+}
+
+html.terminal-page .node-facts td.warn {
   color: var(--red);
 }
 

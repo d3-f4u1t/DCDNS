@@ -82,7 +82,7 @@ after a node restart, or during a partial network partition.
 - Blockchain DNS systems (Namecoin, Handshake, ENS) reach consensus on name
   ownership. They do not solve per-query freshness across independently
   committed authoritative DNS nodes.
-- The current DCDNS prototype does semantic majority voting, but not
+- The DCDNS prototype implements semantic majority voting and now also
   revision-coherent freshness. That delta is the proposed invention.
 
 
@@ -399,8 +399,9 @@ Blockchain DNS
   per-query freshness across independently committed authoritative DNS nodes.
 
 Current DCDNS prototype
-  Implements semantic majority voting but not revision-coherent freshness. The
-  freshness condition is the proposed delta.
+  Implements semantic majority voting and revision-coherent freshness: signed
+  EDNS(0) revision metadata, F1/F2/F3 conditions, bounded retry and fail-closed
+  stale-majority handling. The freshness condition is the proposed delta.
 
 The novelty argument is therefore narrow: the combination of (i) semantic DNS
 answer grouping, (ii) revision metadata bound to each answer, and (iii) a
@@ -411,32 +412,34 @@ freshness condition that can reject a stale majority and fail closed.
 8. VALIDATION PLAN
 ================================================================================
 
-The existing DCDNS testbed can test the idea without inventing a new system.
+The existing DCDNS testbed has been used to test the idea without inventing a
+new system.
 
-Experiment: stale majority
+Experiment: stale majority (implemented in dcdns/experiments.py)
   1. Start three registry/DNS nodes at the same revision.
-  2. Pause replication on n1 and n2, or start them from an older snapshot.
-  3. Commit an address change on n3 only.
-  4. Query the current resolver: it returns the stale address.
-  5. Query the proposed resolver: it detects that the majority group has no
-     node at the watermark revision.
+  2. Freeze the real DNS snapshots of n1 and n2 at their committed revision.
+  3. Commit a signed address change; n3 applies it, n1/n2 keep serving the
+     frozen snapshot.
+  4. Query the semantic-only resolver: it returns the stale address.
+  5. Query the RAM-DNS resolver: it detects that the majority group has no node
+     at the watermark revision.
   6. Confirm that it retries and then returns SERVFAIL, or a marked stale
      answer if policy allows.
-  7. Resume n1/n2, let them catch up, and confirm the fresh answer is returned.
+  7. Thaw n1/n2, let them catch up, and confirm the fresh answer is returned.
 
-Measurements:
-  - stale-majority detection rate;
-  - retry latency;
-  - false SERVFAIL rate when replication lag is harmless;
-  - freshness of returned answers after an update;
-  - behaviour when one node lies and two nodes lag.
+Measured in the live run:
+  - semantic-only baseline returned the stale address;
+  - RAM-DNS reported stale-majority at the next revision and returned SERVFAIL;
+  - the new answer was served after thaw;
+  - all 12 live experiments passed, including the stale-majority case.
 
-Implementation path in the existing code:
-  - Add revision metadata to the per-node DNS response (start with the status
-    API, then an EDNS(0) option).
-  - Add a freshness check to dcdns/quorum_resolver.py.
-  - Add a stale-majority experiment to dcdns/experiments.py.
-  - Add unit tests for F1/F2/F3, no-majority, and marked-stale policy.
+Implementation in the existing code:
+  - EDNS(0) option 65001 in dcdns/dns_server.py, with optional Ed25519
+    signature and zone digest.
+  - Freshness check F1/F2/F3 in dcdns/quorum_resolver.py.
+  - Stale-majority experiment in dcdns/experiments.py.
+  - Unit tests in tests/test_ram_dns.py for F1/F2/F3, no-majority, retries,
+    marked-stale policy, token verification and real snapshot freeze.
 
 
 ================================================================================
@@ -445,8 +448,9 @@ Implementation path in the existing code:
 
 - The idea is incremental over quorum reads, DNSSEC, primary/secondary DNS,
   anycast and blockchain DNS. Prior art is crowded.
-- The prototype does not yet implement revision metadata or the freshness
-  condition. The current resolver does semantic majority only.
+- The prototype now implements revision metadata and the freshness condition,
+  but the evidence is a three-node lab deployment on one host, not a production
+  measurement.
 - Revision metadata must itself be trustworthy. A malicious node could claim a
   fake revision unless the revision is signed or confirmed by a quorum.
 - Two colluding DNS nodes can still defeat majority trust. This is not Byzantine
@@ -485,9 +489,11 @@ FIG. 3 - Revision metadata options
    replica freshness.
 2. Check the college's student IP policy before submitting or demoing the
    specific mechanism publicly.
-3. Implement the stale-majority experiment first; it is the clearest proof.
-4. Add revision metadata using the simplest method (status endpoint), then
-   consider EDNS(0) or signed tokens.
+3. The stale-majority experiment is implemented and passing; use it as the
+   clearest proof.
+4. Revision metadata is implemented with EDNS(0) option 65001 and an optional
+   signed token, with status fallback. Collect repeatable measurements before
+   publishing.
 5. Ask the college IP cell whether a provisional filing is worth the cost. If
    not, submit the disclosure as a research/innovation report and keep the
    implementation as the evidence.
