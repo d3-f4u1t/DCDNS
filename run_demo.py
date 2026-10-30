@@ -39,6 +39,7 @@ DNS_PORTS = {"n1": 5354, "n2": 5355, "n3": 5356}
 DATA = ROOT / "data" / "live"
 LOGS = DATA / "logs"
 IDENTITIES = ROOT / "identities"
+NODE_KEYS = DATA / "node-keys"
 
 DNS_PORT = 5353
 DNS_METRICS_PORT = 5380
@@ -49,12 +50,35 @@ def node_url(node_id: str) -> str:
     return f"http://127.0.0.1:{NODE_PORTS[node_id]}"
 
 
+def create_node_keys() -> dict[str, crypto.KeyPair]:
+    """Create or load one Ed25519 key per registry node.
+
+    These keys sign the revision token attached to each DNS answer. They are
+    separate from participant identities: a node uses its key to attest which
+    committed revision produced an answer. The resolver is configured with the
+    matching public keys out of band.
+    """
+    NODE_KEYS.mkdir(parents=True, exist_ok=True)
+    keys: dict[str, crypto.KeyPair] = {}
+    for node_id in NODE_PORTS:
+        path = NODE_KEYS / f"{node_id}.json"
+        if path.exists():
+            keys[node_id] = crypto.load_keypair(str(path))
+        else:
+            keys[node_id] = crypto.KeyPair.generate(
+                label=f"registry node {node_id}", role="registry"
+            )
+            crypto.save_keypair(keys[node_id], str(path))
+    return keys
+
+
 def start_node(
     node_id: str,
     root_key: str,
     log_dir: Path,
     dns_port: int | None = None,
     chaos: bool = False,
+    dns_key: str | None = None,
 ) -> subprocess.Popen:
     peers = ",".join(
         f"{pid}=http://127.0.0.1:{port}"
@@ -74,6 +98,8 @@ def start_node(
         command += ["--dns-port", str(dns_port)]
     if chaos:
         command.append("--chaos")
+    if dns_key:
+        command += ["--dns-key", dns_key]
     return subprocess.Popen(
         command,
         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
@@ -196,6 +222,20 @@ def main() -> int:
     parser.add_argument("--no-dns", action="store_true")
     parser.add_argument("--no-supervisor", action="store_true",
                         help="do not restart crashed children (useful for failure demos)")
+    parser.add_argument("--no-demo-controls", action="store_true",
+                        help="hide the portal's loopback-only DNS fault controls")
+    parser.add_argument(
+        "--freshness",
+        choices=["off", "f1", "f2", "f3"],
+        default="f1",
+        help="revision freshness condition for the quorum resolver (default: f1)",
+    )
+    parser.add_argument(
+        "--stale-policy",
+        choices=["servfail", "marked-stale"],
+        default="servfail",
+        help="what the resolver returns when a stale majority does not converge",
+    )
     args = parser.parse_args()
 
     # Show progress as it happens even when stdout is piped (python run_demo.py | tee ...).
@@ -220,6 +260,10 @@ def main() -> int:
     print("\n=== DCDNS :: decentralized campus domain registry ===\n")
     keys = create_identities(str(IDENTITIES))
     root_key = keys["root"].public_key
+    node_keys = create_node_keys()
+    node_key_spec = ",".join(
+        f"{node_id}={key.public_key}" for node_id, key in node_keys.items()
+    )
 
     node_urls = ",".join(node_url(n) for n in NODE_PORTS)
 
@@ -231,28 +275,41 @@ def main() -> int:
         api_nodes = ",".join(
             f"{node_id}={node_url(node_id)}" for node_id in NODE_PORTS
         )
+        command = [
+            sys.executable, "-m", "dcdns.quorum_resolver",
+            "--port", str(DNS_PORT),
+            "--metrics-port", str(DNS_METRICS_PORT),
+            "--nodes", dns_nodes,
+            "--api-nodes", api_nodes,
+            "--freshness", args.freshness,
+            "--stale-policy", args.stale_policy,
+            "--node-keys", node_key_spec,
+        ]
         return subprocess.Popen(
-            [
-                sys.executable, "-m", "dcdns.quorum_resolver",
-                "--port", str(DNS_PORT),
-                "--metrics-port", str(DNS_METRICS_PORT),
-                "--nodes", dns_nodes,
-                "--api-nodes", api_nodes,
-            ],
-            cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
+            command, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
         )
 
     def launch_portal() -> subprocess.Popen:
         log = open(LOGS / "portal.log", "a", encoding="utf-8")
+        command = [
+            sys.executable, "-m", "dcdns.portal",
+            "--port", str(PORTAL_PORT),
+            "--nodes", node_urls,
+            "--dns-port", str(DNS_PORT),
+            "--dns-metrics", f"http://127.0.0.1:{DNS_METRICS_PORT}",
+            "--identities", str(IDENTITIES),
+            "--node-apis", ",".join(
+                f"{node_id}={node_url(node_id)}" for node_id in NODE_PORTS
+            ),
+            "--dns-nodes", ",".join(
+                f"{node_id}=127.0.0.1:{DNS_PORTS[node_id]}" for node_id in NODE_PORTS
+            ),
+            "--node-keys", node_key_spec,
+        ]
+        if not args.no_demo_controls:
+            command.append("--demo-controls")
         return subprocess.Popen(
-            [
-                sys.executable, "-m", "dcdns.portal",
-                "--port", str(PORTAL_PORT),
-                "--nodes", node_urls,
-                "--dns-port", str(DNS_PORT),
-                "--dns-metrics", f"http://127.0.0.1:{DNS_METRICS_PORT}",
-                "--identities", str(IDENTITIES),
-            ],
+            command,
             cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
         )
 
@@ -264,6 +321,7 @@ def main() -> int:
                 LOGS,
                 dns_port=None if args.no_dns else DNS_PORTS[nid],
                 chaos=not args.no_dns,
+                dns_key=str(NODE_KEYS / f"{nid}.json"),
             )
         )
         for node_id in NODE_PORTS
@@ -285,6 +343,7 @@ def main() -> int:
                 LOGS,
                 dns_port=None if args.no_dns else DNS_PORTS[node_id],
                 chaos=not args.no_dns,
+                dns_key=str(NODE_KEYS / f"{node_id}.json"),
             )
             dns_note = (
                 f"  dns udp/{DNS_PORTS[node_id]}" if not args.no_dns else ""
@@ -301,6 +360,11 @@ def main() -> int:
             processes["quorum"] = launch_quorum_dns()
             print(f"  client-facing udp://127.0.0.1:{DNS_PORT} "
                   f"(majority of {len(NODE_PORTS)} nodes must agree)")
+            if args.freshness == "off":
+                print("  freshness  off (semantic majority only)")
+            else:
+                print(f"  freshness  {args.freshness.upper()} "
+                      f"(stale majority -> {args.stale_policy})")
             print(f"  metrics http://127.0.0.1:{DNS_METRICS_PORT}/metrics")
 
         if not args.no_portal:
@@ -319,6 +383,11 @@ def main() -> int:
         ))
         print(f"  Metrics     http://127.0.0.1:{DNS_METRICS_PORT}/metrics")
         print(f"  Node APIs   {', '.join(node_url(n) for n in NODE_PORTS)}")
+        if not args.no_portal:
+            print(
+                "  Console     fault controls "
+                + ("ENABLED (loopback only)" if not args.no_demo_controls else "disabled")
+            )
         print("")
         print("  Try:  python -m dcdns.dig techfest.cs.test --all")
         print("        python -m dcdns.dig techfest.cs.test --port 5354   (node n1 only)")

@@ -1,65 +1,161 @@
 {% extends "base.html" %}
-{% block title %}Dashboard{% endblock %}
+{% block title %}Console{% endblock %}
 
 {% block content %}
-<div class="row mb">
-  <h1 style="margin:0">Registry overview</h1>
-  <span class="spacer"></span>
-  <span class="badge accent" id="live-badge">live</span>
+<nav class="term-jump" aria-label="Console sections" data-section-nav>
+  <span class="term-jump-label">sections</span>
+  <a href="#query" data-section-link="query">01 query</a>
+  {% if demo_controls %}
+  <a href="#faults" data-section-link="faults">02 faults</a>
+  {% endif %}
+  <a href="#status" data-section-link="status">{{ '03' if demo_controls else '02' }} status</a>
+  <a href="#activity" data-section-link="activity">{{ '04' if demo_controls else '03' }} activity</a>
+</nav>
+
+<div class="term-session" role="status">
+  <span class="term-session-label">session</span>
+  <span class="live-label" id="live-label">live</span>
+  <span class="term-sep" aria-hidden="true">/</span>
+  <span>status poll 2s</span>
+  {% if faults %}
+    <span class="fault-label">FAULT ACTIVE</span>
+  {% endif %}
 </div>
 
-<div id="live-status">
-  {% include "partials/status.html" %}
-</div>
-
-<div class="grid cols-2 mt">
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Recent accepted operations</h2>
-      <a class="small" href="/audit">full audit trail →</a>
+<section class="term-hero" aria-labelledby="console-title">
+  <div class="term-hero-main">
+    <p class="term-kicker">campus domain registry</p>
+    <h1 id="console-title">DCDNS console<span class="term-cursor" aria-hidden="true">_</span></h1>
+    <p class="term-lede">
+      Permissioned campus registry · three registry nodes · DNS majority resolver
+    </p>
+    <div class="term-actions">
+      <a class="term-action" href="/domains">Browse domains</a>
+      <a class="term-action" href="/audit">View audit trail</a>
     </div>
-    {% if audit %}
-    <table>
-      <thead><tr><th>Rev</th><th>Operation</th><th>Target</th><th>By</th></tr></thead>
-      <tbody>
-      {% for record in audit %}
-        <tr>
-          <td class="tnum">{{ record.revision }}</td>
-          <td><span class="badge muted">{{ record.op }}</span></td>
-          <td class="mono">{{ record.target }}</td>
-          <td class="small">{{ labels.get(record.actor, record.actor[:10] ~ '…') }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-      <div class="empty">No operations committed yet.</div>
-    {% endif %}
-  </section>
+  </div>
+  <dl class="term-facts" aria-label="System facts">
+    <div class="term-fact">
+      <dt>authority</dt>
+      <dd>permissioned registry</dd>
+    </div>
+    <div class="term-fact">
+      <dt>replication</dt>
+      <dd>leader + majority of 3</dd>
+    </div>
+    <div class="term-fact">
+      <dt>signatures</dt>
+      <dd>Ed25519 operations</dd>
+    </div>
+    <div class="term-fact">
+      <dt>dns</dt>
+      <dd>3 responders · 2-of-3 + freshness</dd>
+    </div>
+  </dl>
+</section>
 
-  <section class="panel">
-    <div class="panel-head"><h2>Try a lookup</h2></div>
-    <form method="get" action="/domains">
-      <label class="field">
-        <span>Domain name</span>
-        <input type="text" name="q" placeholder="techfest.cs.test" value="">
-      </label>
-      <button class="primary" type="submit">Resolve in registry</button>
+<section class="term-block" id="query" aria-labelledby="query-title">
+  <div class="term-index" aria-hidden="true">01</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="query-title">DNS query</h2>
+      <span class="term-meta">direct node probes + resolver decision</span>
+    </header>
+    <form id="dns-query-form" method="get" action="/" class="term-query" data-probe-embed="1">
+      <label for="q">DNS name</label>
+      <input id="q" name="q" value="{{ q }}" autocomplete="off" spellcheck="false"
+             placeholder="techfest.cs.test">
+      <button class="primary" type="submit">Query DNS</button>
+      <span class="query-hint">
+        direct UDP to n1/n2/n3, then the resolver's own decision
+      </span>
     </form>
-    <p class="hint">
-      Every registry node also answers DNS on its own port. The client-facing
-      resolver on <code>127.0.0.1:5353</code> asks all three and returns an
-      answer only when a majority agrees. Try
-      <code>python -m dcdns.dig techfest.cs.test --all</code>.
+    <div class="term-output-label">output</div>
+    <div id="probe-live">
+      {% include "partials/probe.html" %}
+    </div>
+  </div>
+</section>
+
+{% if demo_controls %}
+<section class="term-block" id="faults" aria-labelledby="faults-title">
+  <div class="term-index" aria-hidden="true">02</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="faults-title">DNS fault controls</h2>
+      <span class="term-meta">loopback only · DNS layer</span>
+    </header>
+    <div class="scenario-row">
+      <form method="post" action="/demo/fault/lie" class="inline-form">
+        <input type="hidden" name="node" value="n3">
+        <input type="hidden" name="name" value="{{ q }}" data-query-name>
+        <input type="hidden" name="address" value="10.20.5.66">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="danger">Make n3 lie</button>
+      </form>
+      <form method="post" action="/demo/fault/pause" class="inline-form">
+        <input type="hidden" name="node" value="n2">
+        <input type="hidden" name="paused" value="1">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit">Pause n2</button>
+      </form>
+      <form method="post" action="/demo/fault/pause" class="inline-form">
+        <input type="hidden" name="node" value="n2,n3">
+        <input type="hidden" name="paused" value="1">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="danger">Pause n2 + n3</button>
+      </form>
+      <form method="post" action="/demo/fault/freeze" class="inline-form">
+        <input type="hidden" name="node" value="n1,n2">
+        <input type="hidden" name="frozen" value="1">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit" class="danger">Freeze n1 + n2 DNS</button>
+      </form>
+      <form method="post" action="/demo/fault/freeze" class="inline-form">
+        <input type="hidden" name="node" value="n1,n2,n3">
+        <input type="hidden" name="frozen" value="0">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit">Thaw DNS snapshots</button>
+      </form>
+      <form method="post" action="/demo/fault/reset" class="inline-form">
+        <input type="hidden" name="q" value="{{ q }}" data-query-name>
+        <button type="submit">Reset DNS faults</button>
+      </form>
+    </div>
+    <p class="term-note">
+      These controls change only the DNS responder. They do not sign or submit a
+      registry operation, and they do not change committed registry state.
+      Freezing two responders pins them to a real committed snapshot; commit an
+      address update afterwards and the semantic majority is stale while RAM-DNS
+      fails closed until the responders catch up.
     </p>
-    <div class="panel-head mt"><h2>What you are looking at</h2></div>
-    <p class="small muted" style="margin:0">
-      Three registry nodes replicate a signed, ordered operation log. Writes are
-      acknowledged only after a majority stores them. Each node independently
-      serves DNS from the committed state it holds, so there is no central DNS
-      server to trust: a client-facing quorum resolver accepts an answer only
-      when 2 of 3 nodes agree. Revoked names stop resolving everywhere.
-    </p>
-  </section>
-</div>
+  </div>
+</section>
+{% endif %}
+
+<section class="term-block" id="status" aria-labelledby="status-title">
+  <div class="term-index" aria-hidden="true">{{ '03' if demo_controls else '02' }}</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="status-title">Live status</h2>
+      <span class="term-meta">registry + DNS · refreshed every 2s</span>
+    </header>
+    <div id="live-status">
+      {% include "partials/status.html" %}
+    </div>
+  </div>
+</section>
+
+<section class="term-block" id="activity" aria-labelledby="activity-title">
+  <div class="term-index" aria-hidden="true">{{ '04' if demo_controls else '03' }}</div>
+  <div class="term-body">
+    <header class="term-head">
+      <h2 id="activity-title">Activity stream</h2>
+      <span class="term-meta">resolver decisions + committed audit chain</span>
+    </header>
+    <div id="live-activity" class="activity-grid">
+      {% include "partials/activity.html" %}
+    </div>
+  </div>
+</section>
 {% endblock %}

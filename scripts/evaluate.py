@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -27,6 +29,23 @@ NODES = [
     "http://127.0.0.1:9102",
     "http://127.0.0.1:9103",
 ]
+NODE_IDS = ("n1", "n2", "n3")
+NODE_KEYS_DIR = ROOT / "data" / "live" / "node-keys"
+DNS_METRICS = "http://127.0.0.1:5380/metrics"
+
+
+def load_node_keys() -> dict[str, str]:
+    """Load the public half of each node's DNS revision-signing key."""
+    keys: dict[str, str] = {}
+    for node_id in NODE_IDS:
+        path = NODE_KEYS_DIR / f"{node_id}.json"
+        if not path.exists():
+            continue
+        try:
+            keys[node_id] = crypto.load_keypair(str(path)).public_key
+        except Exception:
+            continue
+    return keys
 
 
 def main() -> int:
@@ -38,7 +57,14 @@ def main() -> int:
 
     client = ClusterClient(NODES, timeout=6.0)
     resolver = Resolver("127.0.0.1", 5353)
-    runner = ExperimentRunner(client, keys, resolver)
+    node_keys = load_node_keys()
+    runner = ExperimentRunner(client, keys, resolver, node_keys=node_keys)
+
+    freshness = None
+    try:
+        freshness = httpx.get(DNS_METRICS, timeout=2.0).json().get("freshness")
+    except Exception:
+        freshness = None
 
     print("\n=== DCDNS evaluation ===\n")
     statuses = client.statuses()
@@ -47,7 +73,17 @@ def main() -> int:
     revision = max((s.get("revision", 0) for s in live), default=0)
     print(f"nodes reachable : {len(live)}/{len(statuses)}")
     print(f"leader          : {leader}")
-    print(f"committed rev   : {revision}\n")
+    print(f"committed rev   : {revision}")
+    print(f"node DNS keys   : {len(node_keys)}/{len(NODE_IDS)} loaded")
+    if freshness and freshness.get("enabled"):
+        print(
+            "freshness       : "
+            f"{freshness.get('condition')} delta={freshness.get('delta')} "
+            f"watermark={freshness.get('watermark_source')} "
+            f"stale={freshness.get('stale_policy')}\n"
+        )
+    else:
+        print("freshness       : off (semantic majority only)\n")
 
     results: dict[str, dict] = {}
     for experiment in EXPERIMENTS:
@@ -74,6 +110,16 @@ def main() -> int:
         f"- Nodes reachable: **{len(live)}/{len(statuses)}**",
         f"- Current leader: `{leader}`",
         f"- Committed revision at start: **{revision}**",
+        f"- Node DNS revision keys loaded: **{len(node_keys)}/{len(NODE_IDS)}**",
+        (
+            "- Freshness policy: "
+            f"**{freshness.get('condition')}** "
+            f"(delta {freshness.get('delta')}, watermark "
+            f"`{freshness.get('watermark_source')}`, stale policy "
+            f"`{freshness.get('stale_policy')}`)"
+            if freshness and freshness.get("enabled")
+            else "- Freshness policy: **off** (semantic majority only)"
+        ),
         f"- Experiments passed: **{passed}/{total}**",
         "",
         "| # | Experiment | Expected | Observed | Result |",
@@ -103,7 +149,12 @@ def main() -> int:
         "  rather than registry operations.",
         "- **Byzantine behaviour** is out of scope. The replication protocol tolerates",
         "  crash and omission failures only; a compromised node is assumed not to",
-        "  exist. This is a documented limitation, not a claim of protection.",
+        "  exist. RAM-DNS raises the cost of serving stale data, but two colluding",
+        "  nodes can still form a stale or false majority. This is a documented",
+        "  limitation, not a claim of BFT protection.",
+        "- **DNSSEC** is not implemented. The revision token is an application-layer",
+        "  attestation inside EDNS(0); it is not a DNSSEC signature and does not",
+        "  protect clients that do not speak this private option.",
         "- **Clock skew** is checked only as an ingress sanity bound; the state",
         "  machine itself is time-independent.",
         "",

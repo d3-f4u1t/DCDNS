@@ -53,6 +53,7 @@ class ClusterNode:
         heartbeat_interval: float = 0.25,
         write_timeout: float = 2.5,
         request_timeout: float = 0.6,
+        publication_barrier: bool = False,
     ) -> None:
         self.id = node_id
         self.url = url
@@ -64,6 +65,13 @@ class ClusterNode:
         self.write_timeout = write_timeout
         self.request_timeout = request_timeout
 
+        # Variant B: acknowledge a write only after a majority has applied the
+        # committed entry to the state used for DNS answers. Off by default so
+        # the original baseline remains available for comparison.
+        self.publication_barrier = publication_barrier
+        self.peer_commit: dict[str, int] = {peer: 0 for peer in self.peers}
+        self.peer_dns_revision: dict[str, int] = {peer: 0 for peer in self.peers}
+
         self.state = RegistryState(root_public=root_public)
         self.log: list[dict] = []
         self.term: int = 0
@@ -72,9 +80,12 @@ class ClusterNode:
 
         # Every node is also a DNS authority. This is a flattened, immutable
         # snapshot of the *committed* state; the DNS responder thread reads it
-        # without taking the event loop's locks.
+        # without taking the event loop's locks. ``dns_snapshot`` binds the zone
+        # and revision in one atomic tuple so a responder can never publish a
+        # zone and a revision from different commits.
         self.dns_zone: dict[str, str] = {}
         self.dns_revision: int = 0
+        self.dns_snapshot: tuple[dict[str, str], int] = ({}, 0)
         self.dns_port: int | None = None
 
         self.live_peers: set[str] = set()
@@ -90,6 +101,14 @@ class ClusterNode:
         self.accepted: int = 0
         self.rejected: int = 0
         self.last_error: str | None = None
+
+        # Deterministic fault injection for the commit-lag experiment. While
+        # held, a follower still stores replicated entries and reports their
+        # presence, but refuses to advance ``commit_index`` or apply them to
+        # ``state``/``dns_snapshot``. Releasing applies the highest commit
+        # index the leader has announced in the meantime.
+        self.commit_hold: bool = False
+        self.pending_commit_index: int = 0
 
         self._load()
 
@@ -135,17 +154,20 @@ class ClusterNode:
     def _refresh_dns_zone(self) -> None:
         """Rebuild the per-node DNS view from committed state.
 
-        The responder thread only ever reads ``dns_zone`` / ``dns_revision``.
-        Replacing the dict atomically (rather than mutating it) means a query
-        can never observe a half-updated zone.
+        The responder thread only ever reads ``dns_snapshot``. Replacing the
+        tuple atomically (rather than mutating it) means a query can never
+        observe a zone and a revision from different commits. The separate
+        ``dns_zone`` / ``dns_revision`` attributes are kept for status output.
         """
         zone: dict[str, str] = {}
         for name, records in self.state.snapshot_for_dns().items():
             address = records.get("A")
             if address:
                 zone[name] = address
+        revision = self.state.revision
+        self.dns_snapshot = (zone, revision)
         self.dns_zone = zone
-        self.dns_revision = self.state.revision
+        self.dns_revision = revision
 
     def _persist_meta(self) -> None:
         tmp = self._meta_path.with_suffix(".tmp")
@@ -308,6 +330,10 @@ class ClusterNode:
                 data = resp.json()
                 if data.get("ok"):
                     self.peer_last[peer_id] = int(data.get("last_index", start - 1))
+                    self.peer_commit[peer_id] = int(data.get("commit_index", 0))
+                    self.peer_dns_revision[peer_id] = int(
+                        data.get("dns_revision", 0)
+                    )
                 elif data.get("term", 0) > self.term:
                     self.term = int(data["term"])
                     self.leader_id = None
@@ -346,6 +372,24 @@ class ClusterNode:
         if changed or self.dns_revision != self.state.revision:
             self._refresh_dns_zone()
 
+    def _applied_majority(self, index: int) -> bool:
+        """True when a majority has applied ``index`` to its DNS snapshot.
+
+        The leader counts itself only after ``_refresh_dns_zone`` has exposed
+        the applied revision. Followers report their own ``dns_revision`` in
+        the append response, which is sent after they have applied the commit.
+        This is a non-Byzantine check: a lying follower could claim a revision
+        it does not have. The point is to close the ordinary acknowledgement
+        window, not to tolerate arbitrary faulty nodes.
+        """
+        if self.dns_revision < index:
+            return False
+        applied = 1
+        for peer in self.live_peers:
+            if self.peer_dns_revision.get(peer, 0) >= index:
+                applied += 1
+        return applied >= self.quorum
+
     # ------------------------------------------------------------------ #
     # write path
     # ------------------------------------------------------------------ #
@@ -377,22 +421,44 @@ class ClusterNode:
             while time.monotonic() < deadline:
                 await self._replicate()
                 if self.commit_index >= index:
-                    return {
-                        "ok": True,
-                        "committed": True,
-                        "index": index,
-                        "revision": preview["revision"],
-                        "op": preview["op"],
-                        "target": preview["target"],
-                        "detail": preview["detail"],
-                        "term": self.term,
-                    }
+                    if (
+                        not self.publication_barrier
+                        or self._applied_majority(index)
+                    ):
+                        return self._write_result(index, preview)
+                    # The entry is committed, but followers learned the previous
+                    # commit index in the push above. Push the new commit index
+                    # and require a majority of applied DNS snapshots before
+                    # acknowledging.
+                    await self._replicate()
+                    if self._applied_majority(index):
+                        return self._write_result(index, preview)
                 await asyncio.sleep(0.02)
 
+            if self.commit_index >= index:
+                raise NoQuorum(
+                    "operation committed, but a majority did not apply it to "
+                    "the DNS state before the deadline; it may become visible "
+                    "later (ambiguous write)",
+                    ambiguous=True,
+                )
             raise NoQuorum(
                 "operation was appended to the leader log but did not reach a "
-                "majority in time; it may still commit later (ambiguous write)"
+                "majority in time; it may still commit later (ambiguous write)",
+                ambiguous=True,
             )
+
+    def _write_result(self, index: int, preview: dict) -> dict:
+        return {
+            "ok": True,
+            "committed": True,
+            "index": index,
+            "revision": preview["revision"],
+            "op": preview["op"],
+            "target": preview["target"],
+            "detail": preview["detail"],
+            "term": self.term,
+        }
 
     # ------------------------------------------------------------------ #
     # follower RPC handlers
@@ -414,15 +480,61 @@ class ClusterNode:
 
             incoming_commit = min(int(payload.get("commit_index", 0)), len(self.log))
             if incoming_commit > self.commit_index:
-                self.commit_index = incoming_commit
-                self._persist_meta()
-                self._apply_committed()
+                if self.commit_hold:
+                    # Store the fact that the leader has committed further, but
+                    # do not expose it to readers or the DNS responder yet.
+                    self.pending_commit_index = max(
+                        self.pending_commit_index, incoming_commit
+                    )
+                else:
+                    self.commit_index = incoming_commit
+                    self._persist_meta()
+                    self._apply_committed()
 
         return {
             "ok": True,
             "term": self.term,
             "last_index": len(self.log),
             "commit_index": self.commit_index,
+            "pending_commit_index": self.pending_commit_index,
+            "commit_hold": self.commit_hold,
+            "revision": self.state.revision,
+            "dns_revision": self.dns_revision,
+        }
+
+    async def set_commit_hold(self, held: bool) -> dict:
+        """Enable or release deterministic commit-application lag.
+
+        This is fault injection, not part of normal replication. A held node
+        keeps receiving and durably storing entries, so the leader can still
+        count it toward a majority; it simply does not advance its committed
+        state or DNS snapshot. Releasing applies every commit the leader
+        announced while the hold was active.
+        """
+        async with self._lock:
+            if held:
+                self.commit_hold = True
+                self.pending_commit_index = max(
+                    self.pending_commit_index, self.commit_index
+                )
+            else:
+                self.commit_hold = False
+                pending = min(self.pending_commit_index, len(self.log))
+                if pending > self.commit_index:
+                    self.commit_index = pending
+                    self._persist_meta()
+                    self._apply_committed()
+                self.pending_commit_index = self.commit_index
+        return self.replication_status()
+
+    def replication_status(self) -> dict:
+        return {
+            "commit_index": self.commit_index,
+            "pending_commit_index": self.pending_commit_index,
+            "commit_hold": self.commit_hold,
+            "applied_revision": self.state.revision,
+            "dns_revision": self.dns_revision,
+            "log_length": len(self.log),
         }
 
     # ------------------------------------------------------------------ #
@@ -436,6 +548,11 @@ class ClusterNode:
             "term": self.term,
             "leader_id": self.leader_id,
             "commit_index": self.commit_index,
+            "pending_commit_index": self.pending_commit_index,
+            "commit_hold": self.commit_hold,
+            "publication_barrier": self.publication_barrier,
+            "peer_commit": dict(self.peer_commit),
+            "peer_dns_revision": dict(self.peer_dns_revision),
             "revision": self.state.revision,
             "log_length": len(self.log),
             "peers": sorted(self.peers),

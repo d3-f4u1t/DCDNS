@@ -33,4 +33,13 @@ class NotLeader(Exception):
 
 
 class NoQuorum(Exception):
-    """Raised when a write cannot be committed by a majority of nodes."""
+    """Raised when a write cannot be committed by a majority of nodes.
+
+    ``ambiguous`` is true when the entry may already have committed (or may
+    still commit) even though the client did not receive a success. Callers
+    must not assume the write failed in that case.
+    """
+
+    def __init__(self, message: str, ambiguous: bool = False):
+        super().__init__(message)
+        self.ambiguous = ambiguous

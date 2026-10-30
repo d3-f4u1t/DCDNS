@@ -18,14 +18,20 @@ class ClusterClient:
     def __init__(self, urls: Iterable[str], timeout: float = 5.0) -> None:
         self.urls = list(urls)
         self.timeout = timeout
+        # Constructing httpx.Client on Windows reads the system certificate
+        # store, which can take seconds. Reuse one client for the lifetime of
+        # the portal/CLI process instead of paying that cost on every call.
+        self._http = httpx.Client(timeout=timeout)
+
+    def close(self) -> None:
+        self._http.close()
 
     # ------------------------------------------------------------------ #
     def statuses(self) -> list[dict]:
         results = []
         for url in self.urls:
             try:
-                with httpx.Client(timeout=1.0) as client:
-                    resp = client.get(f"{url}/status")
+                resp = self._http.get(f"{url}/status", timeout=1.0)
                 if resp.status_code == 200:
                     results.append(resp.json())
                 else:
@@ -56,8 +62,7 @@ class ClusterClient:
         for _ in range(3):
             for url in self.urls:
                 try:
-                    with httpx.Client(timeout=self.timeout) as client:
-                        resp = client.post(f"{url}/op", json=op)
+                    resp = self._http.post(f"{url}/op", json=op, timeout=self.timeout)
                     payload = resp.json()
                     if resp.status_code == 200:
                         return payload
@@ -81,8 +86,9 @@ class ClusterClient:
         last: Exception | None = None
         for url in self.urls:
             try:
-                with httpx.Client(timeout=self.timeout) as client:
-                    resp = client.get(f"{url}{path}", params=params)
+                resp = self._http.get(
+                    f"{url}{path}", params=params, timeout=self.timeout
+                )
                 if resp.status_code == 200:
                     return resp.json()
                 last = ClusterError(f"HTTP {resp.status_code}", f"HTTP_{resp.status_code}")
@@ -95,8 +101,7 @@ class ClusterClient:
         best: dict | None = None
         for url in self.urls:
             try:
-                with httpx.Client(timeout=2.0) as client:
-                    resp = client.get(f"{url}/internal/state")
+                resp = self._http.get(f"{url}/internal/state", timeout=2.0)
                 if resp.status_code != 200:
                     continue
                 data = resp.json()

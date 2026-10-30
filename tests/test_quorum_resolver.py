@@ -254,3 +254,57 @@ def test_node_responder_can_be_made_to_lie_for_the_demo():
 
     assert parsed["answers"][0]["address"] == "10.20.5.66"
     assert responder.summary()["overrides"] == {"techfest.cs.test": "10.20.5.66"}
+
+
+def test_node_responder_pause_drops_queries_and_reports_state():
+    zone = {"techfest.cs.test": "10.20.5.42"}
+    responder = NodeDNSResponder(
+        "n2", "127.0.0.1", 0,
+        zone_provider=lambda: zone,
+        revision_provider=lambda: 7,
+    )
+
+    assert responder.set_paused(True) is True
+    assert responder.handle(build_query("techfest.cs.test")) is None
+    assert responder.summary()["paused"] is True
+    assert responder.summary()["paused_queries"] == 1
+
+    assert responder.set_paused(False) is False
+    parsed = parse_response(responder.handle(build_query("techfest.cs.test")))
+    assert parsed["answers"][0]["address"] == "10.20.5.42"
+    assert responder.summary()["paused"] is False
+
+
+def test_resolve_detail_exposes_the_same_decision_and_vote_map():
+    query = build_query("techfest.cs.test")
+    good = engine_with({"techfest.cs.test": "10.20.5.42"})
+    liar = engine_with({"techfest.cs.test": "10.20.5.66"})
+    engines = {"n1": good, "n2": good, "n3": liar}
+
+    def fake_query(host, port, data, timeout):
+        return engines[host].handle(data)
+
+    resolver = QuorumResolver(
+        nodes={"n1": ("n1", 5354), "n2": ("n2", 5355), "n3": ("n3", 5356)},
+        required=2,
+        query_node=fake_query,
+    )
+    try:
+        detail = resolver.resolve_detail(query)
+        metrics = resolver.metrics()
+    finally:
+        resolver.stop()
+
+    assert detail["ok"] is True
+    assert detail["answer"] == "10.20.5.42"
+    assert detail["votes"] == {
+        "n1": "10.20.5.42",
+        "n2": "10.20.5.42",
+        "n3": "10.20.5.66",
+    }
+    assert detail["winner"] == ["n1", "n2"]
+    assert detail["disagreement"] is True
+    assert detail["required"] == 2
+    assert detail["latency_ms"] >= 0
+    assert metrics["queries"] == 1
+    assert metrics["recent"][-1]["votes"] == detail["votes"]

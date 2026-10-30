@@ -4,6 +4,10 @@ Windows' ``nslookup`` cannot target a non-standard UDP port, so the demo uses
 this instead. It speaks the same wire format as any other DNS client; nothing
 about the query is special.
 
+It also decodes the private EDNS revision token that each node attaches to its
+answer (option 65001) and the stale-answer marker (option 65002), so the
+freshness decision is visible from the command line:
+
     python -m dcdns.dig techfest.cs.test
     python -m dcdns.dig techfest.cs.test --all
     python -m dcdns.dig techfest.cs.test --port 5354
@@ -50,10 +54,27 @@ def main() -> None:
 
     width = max(len(label) for label, _host, _port in targets)
     for label, host, port in targets:
-        rcode, answer = Resolver(host, port).query(args.name)
-        rcode_name = RCODE_NAMES.get(rcode, f"RCODE{rcode}")
+        detail = Resolver(host, port).query_detail(args.name)
+        rcode_name = RCODE_NAMES.get(detail["rcode"], f"RCODE{detail['rcode']}")
         endpoint = f"{host}:{port}"
-        print(f"{label:<{width}}  {endpoint:<18}  {rcode_name:<11}  {answer or '-'}")
+        revision = (
+            f"rev {detail['revision']}"
+            if detail["revision"] is not None
+            else "rev -"
+        )
+        token = "signed" if detail["signed"] else "unsigned"
+        line = (
+            f"{label:<{width}}  {endpoint:<18}  {rcode_name:<11}  "
+            f"{(detail['answer'] or '-'):<14}  {revision:<8}  {token}"
+        )
+        stale = detail.get("stale")
+        if stale:
+            line += (
+                f"  STALE wm={stale['watermark']}"
+                f" maj={stale['majority_revision']}"
+                f" retries={stale['retries']}"
+            )
+        print(line)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,11 @@ state machine (`dcdns/state.py`) implements and the test suite verifies.
 4. The registry survives the loss of any single node without losing committed
    state or the ability to accept writes.
 5. Committed state is served as standard DNS by every registry node, and clients
-   accept an answer only when a majority of nodes agrees.
+   accept an answer only when a majority of nodes agrees and that majority is
+   fresh relative to the committed revision watermark.
+6. With the optional publication barrier B, a successful write means that a
+   majority of registry nodes has applied the committed revision to the state
+   used for DNS answers, not merely stored it.
 
 ## 2. Non-goals
 
@@ -220,14 +224,25 @@ suggestion to the client.
 * The leader is the lowest-id node among a reachable majority. Any two
   majorities of three nodes intersect, so two nodes cannot both lead while both
   hold a majority.
-* A write is acknowledged only after a majority has durably stored the entry.
+* **Baseline acknowledgement (A).** A write is acknowledged after a majority has
+  durably stored the entry. Followers apply it only when a later replication
+  push advertises the new commit index, so an immediate DNS query can observe a
+  stale semantic majority.
+* **Publication barrier (B).** With `--publication-barrier`, a write is
+  acknowledged only after a majority reports applying the committed revision to
+  the state used for DNS answers. If the entry commits but the applied majority
+  is not reached before the deadline, the API returns `NO_QUORUM` with
+  `"ambiguous": true`. The operation may still become visible later, so a
+  non-idempotent retry requires client-side de-duplication. B is currently
+  opt-in; making it the default is the audit's first recommendation.
 * A follower applies entries only up to the leader's committed index.
 * Reads are served from local committed state and may lag briefly;
   `GET /domains/{name}?consistent=true` forces a leader read.
 
 Guarantees provided: **majority durability**, **total order of accepted
 operations**, **convergence after reconnection**, **continued writes while one
-of three nodes is down**, **write refusal without a majority**.
+of three nodes is down**, **write refusal without a majority**, and, with B
+enabled, **acknowledgement only after an applied majority**.
 
 For DNS, every node serves the committed state it holds. A lagging follower may
 answer from a slightly older revision; the quorum resolver exposes this by
@@ -260,8 +275,8 @@ entries.
 
 The registry is authoritative for state. DNS is served independently by every
 registry node from that node's committed state, and a client-facing resolver
-requires majority agreement. There is no separate publisher and no central DNS
-front-end.
+requires majority agreement plus revision freshness. There is no separate
+publisher and no central DNS front-end.
 
 **Publication rule.** A name is present in a node's DNS snapshot when the domain
 is not `revoked` and its governing namespace is `active`. Therefore:
@@ -275,25 +290,59 @@ is not `revoked` and its governing namespace is `active`. Therefore:
 **Per-node responder.** Each node runs a UDP responder on its own port
 (`5354`, `5355`, `5356` in the demo). It answers `A` and `ANY` queries, sets the
 authoritative-answer bit, uses a 30-second TTL, returns `NXDOMAIN` for unknown
-names, and returns `NOTIMP` for unsupported types.
+names, and returns `NOTIMP` for unsupported types. Each answer carries the
+node's serving revision, a zone digest and an optional Ed25519 signature in EDNS
+option `65001`.
 
 **Quorum resolver.** The resolver on UDP `5353` forwards the same query to every
 configured node, reduces each response to its semantic content (RCODE plus sorted
-answer records), and returns an answer only if at least a majority agrees (2 of 3
-in the demo). Otherwise it returns `SERVFAIL`. It ignores transaction IDs,
-harmless flags, TTL differences and record order. It has no zone and no keys, so
-it cannot invent an answer.
+answer records), and accepts an answer only if at least a majority agrees (2 of 3
+in the demo). It ignores transaction IDs, harmless flags, TTL differences and
+record order for grouping. It then reads revision evidence from the EDNS token
+(or the node status API as a fallback), computes a committed revision watermark,
+and applies the configured freshness condition:
+
+* **F1** (default): at least one node in the winning majority is at the
+  watermark.
+* **F2**: at least `required` majority nodes are within `delta` of the watermark.
+* **F3**: every majority node is within `delta` of the watermark.
+
+A stale majority is retried up to the configured budget, then the resolver
+returns `SERVFAIL` (default) or a marked-stale answer with EDNS option `65002`
+and a reduced TTL. The resolver has no zone and cannot invent an answer; it may
+hold node public keys to verify revision tokens.
+
+**Write-path publication barrier (B).** The primary fix for the
+acknowledged-write stale-majority window is B, not the read-side freshness
+check. With `--publication-barrier`, a write is acknowledged only when a
+majority of live nodes reports a DNS revision at least as high as the committed
+index. The barrier checks the registry's `dns_revision`, not the responder's
+`serving_revision`; a responder frozen after the registry applied the revision
+can therefore still let B acknowledge. B is non-Byzantine and trusts
+self-reported peer revisions. Its cost is one replication round trip, and its
+timeout can be ambiguous after commit.
+
+**Read-side freshness (C).** RAM-DNS is an optional detector layered on the
+resolver. It can refuse a stale majority, including a frozen responder, when a
+newer revision is visible somewhere. It does not repair the write path and can
+return `SERVFAIL` during a transient window. B and C are complementary: B is the
+correctness fix, C is defence in depth.
 
 **Failure semantics.** One node down: the remaining two agree and the resolver
-answers. One node lying: the honest two outvote it. Two nodes down or three
-different answers: `SERVFAIL`. Two colluding nodes can produce a majority lie;
-this is the documented boundary of majority trust, because DNSSEC is not
-implemented.
+answers if the majority is fresh. One node lying: the honest two outvote it. Two
+nodes down or three different answers: `SERVFAIL`. A semantically agreeing but
+stale majority is retried, then refused under the default policy. Two colluding
+nodes can produce a majority lie; this is the documented boundary of majority
+trust, because DNSSEC is not implemented. A single node claiming a false high
+revision can force fail-closed behaviour under the `responses` watermark.
 
-**Observability.** Each node reports its DNS revision and zone size. The resolver
-reports `published_revision` (the lowest revision among reachable nodes), query
-counts, `NXDOMAIN`, `SERVFAIL`, disagreements and per-node votes. End-to-end
-propagation is measured in the evaluation suite.
+**Observability.** Each node reports committed revision, serving revision,
+revision lag, frozen state and zone size. The resolver reports
+`published_revision` (the lowest committed revision among reachable nodes),
+`serving_revision`, `watermark`, query counts, `NXDOMAIN`, `SERVFAIL`,
+disagreements, freshness failures, stale-majority queries, retries, stale
+answers and per-node revision evidence. End-to-end propagation is measured in the
+evaluation suite.
 
 ---
 
@@ -338,3 +387,10 @@ each is covered by an automated check:
 12. One lying DNS node cannot change the majority answer.
 13. Without a DNS majority, the resolver returns `SERVFAIL` rather than trusting
     one node.
+14. A semantically agreeing but stale majority is detected, retried, and refused
+    under the default policy rather than served as current.
+15. Revision metadata is bound to the node, revision and zone digest, and an
+    invalid signature fails closed when a key is configured.
+16. With the publication barrier enabled, an acknowledged write is followed by a
+    majority whose DNS revision includes the committed revision; if that
+    condition cannot be met, the write fails closed with an ambiguous timeout.

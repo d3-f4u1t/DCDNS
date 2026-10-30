@@ -1,0 +1,73 @@
+{% if dns %}
+<section class="activity-panel" aria-labelledby="resolver-stream-title">
+  <header class="activity-head">
+    <h3 id="resolver-stream-title">resolver.stream</h3>
+  </header>
+  {% if dns.recent %}
+  <div class="activity-log" role="log" aria-label="Recent resolver decisions" tabindex="0">
+    {% for item in dns.recent|default([])|reverse %}
+      {% set decision = 'STALE_MARKED' if item.stale else ('STALE_MAJORITY' if item.stale_majority else ('NO_MAJORITY' if item.rcode == 'SERVFAIL' else ('SPLIT' if item.disagreement else 'UNANIMOUS'))) %}
+      {% set line_class = 'danger' if item.rcode == 'SERVFAIL' or item.stale_majority else ('warn' if item.disagreement or item.stale else 'ok') %}
+      <div class="log-line {{ line_class }}">
+        <span class="log-time">[{{ item.at_display or '--:--:--' }}]</span>
+        <span class="log-tag">RESOLVE</span>
+        <span class="log-name">{{ item.name }}</span>
+        <span class="log-arrow">-&gt;</span>
+        <span class="log-answer">{{ item.answer or '—' }}</span>
+        <span class="log-meta">:: {{ item.rcode or 'ERROR' }}</span>
+        <span class="log-meta">:: votes {{ item.votes.keys()|join(',') if item.votes else '—' }}</span>
+        {% if item.freshness_enabled %}
+        <span class="log-meta">:: {{ item.condition or 'fresh' }} wm {{ item.watermark if item.watermark is not none else '—' }}
+          · revs {% for node_id, revision in (item.revisions or {}).items() %}{{ node_id }}={{ revision if revision is not none else '—' }}{% if not loop.last %},{% endif %}{% endfor %}</span>
+        {% endif %}
+        {% if item.retries %}<span class="log-meta">:: retries {{ item.retries }}</span>{% endif %}
+        <span class="log-decision">:: {{ decision }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">No resolver decisions recorded in the current ring.</div>
+  {% endif %}
+  <p class="source-note">
+    Live ring from the resolver's <code>/metrics</code>. Timestamps come from the
+    resolver process; votes are the semantic answers it compared. A
+    <code>STALE_MAJORITY</code> line means the majority agreed on an answer but
+    its committed revision was behind the freshness watermark, so RAM-DNS
+    refused it instead of serving stale data as current.
+  </p>
+</section>
+{% else %}
+<section class="activity-panel" aria-labelledby="resolver-stream-title">
+  <header class="activity-head">
+    <h3 id="resolver-stream-title">resolver.stream</h3>
+  </header>
+  <div class="empty">The resolver metrics port did not answer.</div>
+  <p class="source-note">No resolver decisions can be shown while metrics are unavailable.</p>
+</section>
+{% endif %}
+
+<section class="activity-panel" aria-labelledby="audit-stream-title">
+  <header class="activity-head">
+    <h3 id="audit-stream-title">registry.stream</h3>
+    <a class="small" href="/audit">full audit trail →</a>
+  </header>
+  {% if audit %}
+  <div class="activity-log" role="log" aria-label="Recent committed registry operations" tabindex="0">
+    {% for record in audit %}
+      <div class="log-line">
+        <span class="log-time">[rev {{ '%02d'|format(record.revision) }}]</span>
+        <span class="log-op">{{ record.op|upper }}</span>
+        <span class="log-target">{{ record.target }}</span>
+        <span class="log-meta">:: signed {{ labels.get(record.actor, record.actor[:10] ~ '…') }}</span>
+        <span class="log-hash" title="{{ record.hash }}">:: {{ record.hash[:8] }}…{{ record.hash[-4:] }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">No accepted operations in the audit chain yet.</div>
+  {% endif %}
+  <p class="source-note">
+    Committed audit chain only. DNS faults and resolver queries are not part of
+    this chain.
+  </p>
+</section>

@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 
+from . import crypto
 from .cluster import ClusterNode
 from .dns_node import NodeDNSResponder
 from .errors import NoQuorum, NotLeader, RegistryError
@@ -33,6 +34,8 @@ def create_app(
     root_public: str,
     dns_port: int | None = None,
     chaos: bool = False,
+    dns_key: str | None = None,
+    publication_barrier: bool = False,
 ) -> FastAPI:
     node = ClusterNode(
         node_id=node_id,
@@ -40,8 +43,15 @@ def create_app(
         peers=peers,
         data_dir=data_dir,
         root_public=root_public,
+        publication_barrier=publication_barrier,
     )
     node.dns_port = dns_port
+    signer = None
+    if dns_key:
+        try:
+            signer = crypto.load_keypair(dns_key)
+        except Exception:
+            signer = None
     responder: NodeDNSResponder | None = None
     if dns_port:
         responder = NodeDNSResponder(
@@ -50,7 +60,9 @@ def create_app(
             port=dns_port,
             zone_provider=lambda: node.dns_zone,
             revision_provider=lambda: node.dns_revision,
+            snapshot_provider=lambda: node.dns_snapshot,
             chaos_enabled=chaos,
+            signer=signer,
         )
 
     app = FastAPI(
@@ -88,7 +100,7 @@ def create_app(
             content={
                 "ok": False,
                 "error": {"code": "NO_QUORUM", "message": str(exc)},
-                "ambiguous": "did not reach a majority" in str(exc),
+                "ambiguous": bool(getattr(exc, "ambiguous", False)),
             },
         )
 
@@ -262,6 +274,8 @@ def create_app(
             "last_index": len(node.log),
             "term": node.term,
             "commit_index": node.commit_index,
+            "pending_commit_index": node.pending_commit_index,
+            "commit_hold": node.commit_hold,
         }
 
     @app.get("/internal/log")
@@ -288,16 +302,26 @@ def create_app(
 
     @app.get("/internal/zone")
     async def internal_zone() -> dict:
-        """The exact zone this node is currently answering from."""
+        """The exact zone and revision this node is currently answering from."""
+        summary = responder.summary() if responder else {}
+        if responder is not None:
+            serving_zone, serving_revision = responder.serving_snapshot()
+        else:
+            serving_zone, serving_revision = dict(node.dns_zone), node.dns_revision
         return {
             "ok": True,
             "node_id": node_id,
             "revision": node.dns_revision,
-            "zone": dict(node.dns_zone),
-            "zone_size": len(node.dns_zone),
+            "serving_revision": serving_revision,
+            "zone": dict(serving_zone),
+            "zone_size": len(serving_zone),
             "dns_port": dns_port,
             "chaos": bool(responder and responder.overrides),
             "overrides": dict(responder.overrides) if responder else {},
+            "paused": bool(responder and responder.paused),
+            "frozen": bool(responder and responder.frozen),
+            "frozen_revision": responder.frozen_revision if responder else None,
+            "signed": bool(summary.get("signed")),
         }
 
     @app.post("/internal/chaos")
@@ -354,6 +378,96 @@ def create_app(
             "overrides": dict(responder.overrides),
         }
 
+    @app.post("/internal/dns/pause")
+    async def internal_dns_pause(payload: dict) -> dict:
+        """Temporarily stop this node's DNS responder (demo/failure-injection).
+
+        The registry process keeps running and keeps replicating. Only DNS
+        datagrams are dropped, which is what a resolver sees when a node is
+        unreachable at the DNS layer. Disabled unless the node was started with
+        ``--chaos``, like the lying-node endpoint.
+        """
+        if responder is None or not chaos:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "CHAOS_DISABLED",
+                        "message": "this node was not started with --chaos",
+                    },
+                },
+            )
+
+        paused = bool(payload.get("paused", payload.get("pause", True)))
+        responder.set_paused(paused)
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "paused": responder.paused,
+        }
+
+    @app.post("/internal/dns/freeze")
+    async def internal_dns_freeze(payload: dict) -> dict:
+        """Pin this node's DNS responder to its current committed snapshot.
+
+        This is the controlled replication-lag fault used by the stale-majority
+        experiment. The registry keeps committing and replicating; the DNS
+        responder keeps answering from the real zone snapshot and revision it
+        had when the freeze was applied. It never fabricates an answer and it
+        does not alter the committed log. Disabled unless the node was started
+        with ``--chaos``.
+        """
+        if responder is None or not chaos:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "CHAOS_DISABLED",
+                        "message": "this node was not started with --chaos",
+                    },
+                },
+            )
+
+        frozen = bool(payload.get("frozen", payload.get("freeze", True)))
+        responder.set_frozen(frozen)
+        summary = responder.summary()
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "frozen": responder.frozen,
+            "frozen_revision": responder.frozen_revision,
+            "serving_revision": summary.get("serving_revision"),
+            "registry_revision": summary.get("revision"),
+            "revision_lag": summary.get("revision_lag"),
+        }
+
+    @app.post("/internal/replication/hold")
+    async def internal_replication_hold(payload: dict) -> dict:
+        """Delay applying committed entries on this node (fault injection).
+
+        This does not stop replication or alter the log: the node still stores
+        entries and acknowledges them, so the leader can commit through it.
+        Only the local ``commit_index`` and the DNS snapshot are held back.
+        Disabled unless the node was started with ``--chaos``.
+        """
+        if not chaos:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "CHAOS_DISABLED",
+                        "message": "this node was not started with --chaos",
+                    },
+                },
+            )
+
+        held = bool(payload.get("held", payload.get("hold", True)))
+        state = await node.set_commit_hold(held)
+        return {"ok": True, "node_id": node_id, **state}
+
     return app
 
 
@@ -382,7 +496,19 @@ def main() -> None:
     parser.add_argument(
         "--chaos",
         action="store_true",
-        help="enable the loopback-only lying-node endpoint for DNS demos",
+        help="enable loopback-only fault injection (lying node, DNS pause/freeze, "
+        "commit hold) for experiments",
+    )
+    parser.add_argument(
+        "--dns-key",
+        default=None,
+        help="path to this node's Ed25519 key for signing DNS revision tokens",
+    )
+    parser.add_argument(
+        "--publication-barrier",
+        action="store_true",
+        help="variant B: acknowledge writes only after a majority has applied "
+        "them to the state used for DNS answers",
     )
     parser.add_argument("--log-level", default="warning")
     args = parser.parse_args()
@@ -404,6 +530,8 @@ def main() -> None:
         args.root,
         dns_port=args.dns_port,
         chaos=args.chaos,
+        dns_key=args.dns_key,
+        publication_barrier=args.publication_barrier,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
 

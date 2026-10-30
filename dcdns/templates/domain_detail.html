@@ -134,17 +134,45 @@
   {% endif %}
 </section>
 
-{% if domain.status == 'active' %}
-<section class="panel mt">
-  <div class="panel-head"><h2>DNS view</h2></div>
-  <p class="small muted" style="margin:0">
-    Each registry node answers for this name from its own committed state.
-    The quorum resolver returns the majority answer:
-    <code>python -m dcdns.dig {{ domain.name }} --all</code>.
-    A direct query to one node is visible too, for example
-    <code>python -m dcdns.dig {{ domain.name }} --port 5354</code>.
-    Answers carry a TTL of 30 seconds.
-  </p>
-</section>
+{% if history %}
+{% set last = history[-1] %}
+<div class="trace-line">
+  <span class="trace-label">last committed</span>
+  <span class="mono">rev {{ last.revision }}</span>
+  <span class="op">{{ last.op }}</span>
+  <span class="mono">{{ last.target }}</span>
+  <span class="small muted">signed by {{ labels.get(last.actor, last.actor[:10] ~ '…') }}</span>
+  <span class="small muted">accepted by the state machine after signature and authority checks</span>
+</div>
 {% endif %}
+
+<section class="panel mt">
+  <div class="panel-head">
+    <h2>DNS view</h2>
+    <span class="badge muted">live query · not the registry API</span>
+  </div>
+  <form id="dns-query-form" method="get" action="/domains/{{ domain.name }}" class="query-bar compact">
+    <label for="q">DNS name</label>
+    <input id="q" name="q" value="{{ q }}" autocomplete="off" spellcheck="false">
+    <button class="primary" type="submit">Query DNS</button>
+    <span class="query-hint">
+      direct UDP to n1/n2/n3, then the resolver's decision
+    </span>
+  </form>
+  <div id="probe-live">
+    {% include "partials/probe.html" %}
+  </div>
+  <div class="source-note">
+    {% if domain.status == 'revoked' %}
+      This name is revoked in the registry. A correct DNS query should return
+      NXDOMAIN from the responding nodes.
+    {% elif domain.status == 'pending_transfer' %}
+      This name is pending transfer. Its records are frozen but the name stays
+      live in DNS until a revocation commits.
+    {% else %}
+      Each node answers from the revision it has committed. A direct node answer
+      can differ from the resolver's majority decision; the table labels both.
+    {% endif %}
+  </div>
+</section>
 {% endblock %}
