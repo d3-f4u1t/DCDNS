@@ -47,6 +47,17 @@ or deliberately pinned to an older snapshot. It is a *stale majority*, not a
 split-brain or a Byzantine fork: the registry still has one committed order,
 but the read path can select an old prefix of it.
 
+### 1.1 Relationship to the write-path fix
+
+The audit in [`CONSISTENCY_AUDIT.md`](CONSISTENCY_AUDIT.md) found that this
+window is deterministic in the baseline DCDNS write path: the API acknowledges
+after a majority has *stored* an entry, while followers learn the new commit
+index on a later push. Variant B, a commit/apply-aware publication barrier,
+closes that window. RAM-DNS is therefore a read-side detector and
+defence-in-depth, not a substitute for a correct write acknowledgement. It
+remains useful when a DNS responder is frozen or when the resolver cannot trust
+that the write path was fixed.
+
 ---
 
 ## 2. The mechanism
@@ -205,9 +216,9 @@ not independent proof of the zone contents. The domain-separation prefix
 prevents a revision token from being confused with a registry operation
 signature.
 
-The token is attached to positive answers and NXDOMAIN answers. It is omitted
-when the responder has no node id (for example, a bare `DNSEngine` used in a
-unit test).
+The token is attached to every response that carries an EDNS OPT record,
+including positive answers, NXDOMAIN and error responses. It is omitted when the
+responder has no node id (for example, a bare `DNSEngine` used in a unit test).
 
 ### 3.2 Stale marker: option `65002`
 
@@ -345,10 +356,11 @@ older committed snapshot, and the registry keeps replicating while it is frozen.
 ## 6. Results
 
 The generated report is [`EVALUATION_RESULTS.md`](EVALUATION_RESULTS.md). The
-current run reports:
+last recorded run reports:
 
 * **12/12** live experiments pass, including `stale_majority`.
-* **97/97** tests pass.
+* **108/108** tests pass (the count now includes the commit-hold,
+  publication-barrier and unrelated-update tests).
 * Node DNS revision keys loaded: **3/3**.
 * Freshness policy: **F1**, delta `0`, watermark `responses`, stale policy
   `servfail`.
@@ -466,6 +478,11 @@ Manual stale-majority demonstration:
 * Production key custody, key rotation, or a secure status channel.
 * That this is a filed patent or that the mechanism is novel until a
   professional prior-art search says so.
+
+A source-verified literature review and novelty assessment is in
+[`ACADEMIC_REVIEW.md`](ACADEMIC_REVIEW.md). It concludes that the underlying
+stale-DNS phenomenon is real and impactful, while RAM-DNS itself is an
+engineering combination with no demonstrated novelty.
 
 ---
 

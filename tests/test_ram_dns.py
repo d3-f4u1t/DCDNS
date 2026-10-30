@@ -363,6 +363,37 @@ def test_f1_accepts_a_fresh_majority():
     assert decision.final_reason == "ok"
 
 
+def test_f1_tolerates_unrelated_update_when_answer_is_unchanged():
+    # All three nodes still answer the same thing for this name. Only the
+    # global revision advanced on n3 because a different name was updated.
+    responses = {
+        "n1": response({NAME: OLD}, 7, "n1"),
+        "n2": response({NAME: OLD}, 7, "n2"),
+        "n3": response({NAME: OLD}, 8, "n3"),
+    }
+
+    f1 = evaluate_responses(
+        responses, 2, FreshnessPolicy(condition="F1", delta=0)
+    )
+    assert f1.ok is True
+    assert f1.watermark == 8
+    assert f1.majority_revisions == [7, 7, 8]
+
+    # F2/F3 are stricter: the two lagging members are not within delta 0 of
+    # the watermark, so an unrelated update can make them fail closed.
+    f2 = evaluate_responses(
+        responses, 2, FreshnessPolicy(condition="F2", delta=0)
+    )
+    assert f2.ok is False
+    assert f2.stale_majority is True
+
+    f3 = evaluate_responses(
+        responses, 2, FreshnessPolicy(condition="F3", delta=0)
+    )
+    assert f3.ok is False
+    assert f3.stale_majority is True
+
+
 def test_f2_and_f3_apply_the_bounded_delta():
     # All three nodes agree semantically, so the majority group is all three.
     responses = {

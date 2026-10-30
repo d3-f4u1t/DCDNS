@@ -19,6 +19,9 @@ state machine (`dcdns/state.py`) implements and the test suite verifies.
 5. Committed state is served as standard DNS by every registry node, and clients
    accept an answer only when a majority of nodes agrees and that majority is
    fresh relative to the committed revision watermark.
+6. With the optional publication barrier B, a successful write means that a
+   majority of registry nodes has applied the committed revision to the state
+   used for DNS answers, not merely stored it.
 
 ## 2. Non-goals
 
@@ -221,14 +224,25 @@ suggestion to the client.
 * The leader is the lowest-id node among a reachable majority. Any two
   majorities of three nodes intersect, so two nodes cannot both lead while both
   hold a majority.
-* A write is acknowledged only after a majority has durably stored the entry.
+* **Baseline acknowledgement (A).** A write is acknowledged after a majority has
+  durably stored the entry. Followers apply it only when a later replication
+  push advertises the new commit index, so an immediate DNS query can observe a
+  stale semantic majority.
+* **Publication barrier (B).** With `--publication-barrier`, a write is
+  acknowledged only after a majority reports applying the committed revision to
+  the state used for DNS answers. If the entry commits but the applied majority
+  is not reached before the deadline, the API returns `NO_QUORUM` with
+  `"ambiguous": true`. The operation may still become visible later, so a
+  non-idempotent retry requires client-side de-duplication. B is currently
+  opt-in; making it the default is the audit's first recommendation.
 * A follower applies entries only up to the leader's committed index.
 * Reads are served from local committed state and may lag briefly;
   `GET /domains/{name}?consistent=true` forces a leader read.
 
 Guarantees provided: **majority durability**, **total order of accepted
 operations**, **convergence after reconnection**, **continued writes while one
-of three nodes is down**, **write refusal without a majority**.
+of three nodes is down**, **write refusal without a majority**, and, with B
+enabled, **acknowledgement only after an applied majority**.
 
 For DNS, every node serves the committed state it holds. A lagging follower may
 answer from a slightly older revision; the quorum resolver exposes this by
@@ -298,6 +312,22 @@ returns `SERVFAIL` (default) or a marked-stale answer with EDNS option `65002`
 and a reduced TTL. The resolver has no zone and cannot invent an answer; it may
 hold node public keys to verify revision tokens.
 
+**Write-path publication barrier (B).** The primary fix for the
+acknowledged-write stale-majority window is B, not the read-side freshness
+check. With `--publication-barrier`, a write is acknowledged only when a
+majority of live nodes reports a DNS revision at least as high as the committed
+index. The barrier checks the registry's `dns_revision`, not the responder's
+`serving_revision`; a responder frozen after the registry applied the revision
+can therefore still let B acknowledge. B is non-Byzantine and trusts
+self-reported peer revisions. Its cost is one replication round trip, and its
+timeout can be ambiguous after commit.
+
+**Read-side freshness (C).** RAM-DNS is an optional detector layered on the
+resolver. It can refuse a stale majority, including a frozen responder, when a
+newer revision is visible somewhere. It does not repair the write path and can
+return `SERVFAIL` during a transient window. B and C are complementary: B is the
+correctness fix, C is defence in depth.
+
 **Failure semantics.** One node down: the remaining two agree and the resolver
 answers if the majority is fresh. One node lying: the honest two outvote it. Two
 nodes down or three different answers: `SERVFAIL`. A semantically agreeing but
@@ -361,3 +391,6 @@ each is covered by an automated check:
     under the default policy rather than served as current.
 15. Revision metadata is bound to the node, revision and zone digest, and an
     invalid signature fails closed when a key is configured.
+16. With the publication barrier enabled, an acknowledged write is followed by a
+    majority whose DNS revision includes the committed revision; if that
+    condition cannot be met, the write fails closed with an ambiguous timeout.

@@ -2,7 +2,9 @@
 
 Scope: the registry prototype as implemented in this repository, deployed as
 three nodes on one machine. Each node also runs a lab DNS responder, and clients
-query a quorum resolver that requires 2 of 3 nodes to agree.
+query a quorum resolver that requires 2 of 3 nodes to agree. The optional
+publication barrier B changes the write acknowledgement; RAM-DNS C is a
+read-side detector, not a substitute for B.
 
 ---
 
@@ -129,6 +131,15 @@ revision claim; it does not prove the answer itself.
 *Test:* experiment *Majority DNS resists a lying node*, plus
 `tests/test_quorum_resolver.py`.
 
+### T13 — DNS availability without a majority
+*Attack/fault:* two nodes are down and only one responder is reachable.
+*Mitigation:* the resolver requires 2 of 3 configured nodes and returns
+`SERVFAIL` rather than trusting the single survivor. This prefers no answer over
+a potentially compromised one.
+*Residual:* clients cannot resolve while no majority is available. This is a
+deliberate availability trade-off.
+*Test:* `tests/test_quorum_resolver.py` single-node `SERVFAIL` cases.
+
 ### T14 — Stale majority
 *Attack/fault:* two nodes agree on an old answer while the third has already
 applied a newer committed revision. The stale nodes are not lying; they are
@@ -143,18 +154,28 @@ A single node can raise the `responses` watermark with a false high revision and
 force fail-closed behaviour; `watermark=quorum` resists that but cannot detect a
 stale majority. A stale majority that omits revision tokens entirely is accepted
 under the default lenient metadata policy; `--require-revision` fails closed.
-RAM-DNS is not BFT.
+RAM-DNS is not BFT. It is a read-side detector; the write-path fix is B.
 *Test:* experiment *Stale majority is detected, not served*, plus
 `tests/test_ram_dns.py`.
 
-### T13 — DNS availability without a majority
-*Attack/fault:* two nodes are down and only one responder is reachable.
-*Mitigation:* the resolver requires 2 of 3 configured nodes and returns
-`SERVFAIL` rather than trusting the single survivor. This prefers no answer over
-a potentially compromised one.
-*Residual:* clients cannot resolve while no majority is available. This is a
-deliberate availability trade-off.
-*Test:* `tests/test_quorum_resolver.py` single-node `SERVFAIL` cases.
+### T15 — Acknowledged write not yet publishable to DNS
+*Fault:* the baseline acknowledges a write after a majority has stored the log
+entry, while the followers apply it only on a later replication push. For a short
+window the coordinator serves the new revision and the followers serve the old
+one, so a semantic DNS majority can return the old address after the client was
+told the write succeeded. This is a commit/apply gap, not Byzantine behaviour.
+*Mitigation:* the publication barrier B (`--publication-barrier`) acknowledges
+only after a majority reports applying the committed revision to the DNS state.
+If that condition cannot be met before the deadline, the API returns `NO_QUORUM`
+with `"ambiguous": true` rather than falsely succeeding. RAM-DNS C can detect a
+remaining stale majority on the read side, but it does not repair the write path.
+*Residual:* B adds one replication round trip and can time out after commit, so
+non-idempotent retries need client-side de-duplication. B checks the registry's
+`dns_revision`, not the responder's `serving_revision`, so a frozen responder can
+still let B acknowledge. B trusts self-reported peer revisions and is not
+Byzantine-safe. B is currently opt-in.
+*Test:* A/B/C harness (`scripts/commit_lag_repro.py`), `tests/test_commit_hold.py`,
+and `docs/CONSISTENCY_AUDIT.md`.
 
 ---
 
@@ -166,6 +187,7 @@ deliberate availability trade-off.
   any client  --signed op-->  [ verify signature ]  -->  state machine
   any client  --signed op-->  [ namespace policy ]  -->  state machine
   follower    --append RPC->  [ term / log rules ]  -->  replicated log
+  registry client --write-->  [ commit + applied majority (B) ] --> ack or ambiguous
   DNS client  --query------>  [ 2-of-3 agreement + freshness ] --> answer or SERVFAIL
 ```
 
@@ -184,6 +206,8 @@ verifies it itself; it does not rely on the forwarding node having done so.
 | Byzantine node | High | Out of scope; explicitly not claimed |
 | Two colluding DNS nodes | High | Majority trust boundary; DNSSEC/signed zones not built |
 | Stale majority | High | Detected by RAM-DNS F1/F2/F3; fails closed after bounded retries |
+| Acknowledged write not yet publishable | High | B closes the normal path but is opt-in; C can detect the read-side symptom; see the audit |
+| Ambiguous barrier timeout | Medium | The write may commit after `NO_QUORUM`; idempotency/de-duplication is not implemented |
 | Single false-high revision | Medium | Can force fail-closed under `responses` watermark; signed tokens identify the claimant, `quorum` watermark is an alternative |
 | Watermark completeness | Medium | Response-based watermark cannot see a commit no responder has seen |
 | Portal holds private keys | High in production | Demo-only; documented in the UI |
@@ -200,6 +224,10 @@ verifies it itself; it does not rely on the forwarding node having done so.
 * That the system eliminates central authority. The root authority remains.
 * That it resists a malicious registry node.
 * That two colluding DNS nodes cannot lie.
+* That B is currently the default. It is opt-in through
+  `--publication-barrier`; the audit recommends making it the default.
+* That B or C is Byzantine fault tolerance. B trusts self-reported peer
+  revisions; C's signature proves authorship, not truth.
 * That DNS answers are DNSSEC-signed. The EDNS revision token attests revision
   metadata, not the answer; DNSSEC is not implemented.
 * That it is a production PKI. Key enrolment and recovery are specified, not

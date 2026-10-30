@@ -182,13 +182,63 @@ existing DNS/DHCP.
 
 ---
 
+## ADR-7 — Write acknowledgement: publication barrier before success
+
+**Context.** The replicated log separates *commit* (a majority has stored an
+entry) from *apply* (the deterministic state machine has executed it and
+refreshed the DNS snapshot). The baseline acknowledged as soon as the commit
+index advanced. Followers learned the new commit index only on a later
+replication push, so an immediate DNS query could see the leader at revision
+`i` and a majority at revision `i - 1`. The semantic resolver then returned the
+old address even though the client had been told the write succeeded.
+
+**Decision.** Add an optional publication barrier B. With
+`--publication-barrier`, a write is acknowledged only after a majority of live
+nodes reports a `dns_revision` at least as high as the committed index. The
+leader counts itself only after refreshing its own DNS snapshot, and counts a
+follower only when the append response reports the applied revision. If the
+entry commits but the applied majority is not reached before the deadline, the
+API returns `NO_QUORUM` with `"ambiguous": true`.
+
+**Why.** The acknowledgement should describe the state the DNS layer can
+actually serve, not merely the state that has been stored. B is the standard
+commit/apply discipline applied to the publication boundary. In the controlled
+comparison it removed the normal-path stale majority: 3 of 3 control writes
+acknowledged with zero stale majorities, versus 12 of 12 stale in the baseline.
+The cost was one replication round trip: control ack p50 14.80 ms versus
+7.87 ms.
+
+**Consequences.**
+
+* B is currently **opt-in**; the baseline remains available for comparison.
+  Making B the default is the audit's first recommendation.
+* A timeout after commit is reported honestly as ambiguous, but a
+  non-idempotent client must not retry blindly. Operation de-duplication is a
+  documented next step, not an implemented guarantee.
+* B checks the registry's `dns_revision`, not the responder's
+  `serving_revision`. A responder frozen after the registry applied the
+  revision can still let B acknowledge; RAM-DNS C covers that case only when a
+  newer revision is visible.
+* B trusts self-reported peer revisions and is not Byzantine-safe. Two
+  colluding nodes can defeat it, as they can defeat the DNS majority.
+* Held writes fail closed with `NO_QUORUM` and converge after the fault is
+  released; this is tested by `tests/test_commit_hold.py` and the A/B/C harness.
+
+**Production path.** Make B the default, add a regression test that queries a
+majority of DNS responders immediately after a successful write, and add
+idempotency keys or operation de-duplication so an ambiguous timeout is safe to
+retry.
+
+---
+
 ## Module boundaries
 
 ```text
 crypto.py     pure functions: keys, canonical bytes, signatures
 names.py      pure functions: syntax and record policy
 state.py      pure state machine: apply(operation) -> result | error
-cluster.py    I/O and ordering only; calls state.apply; publishes DNS snapshots
+cluster.py    I/O and ordering only; calls state.apply; publishes DNS snapshots;
+              commit hold and publication barrier
 node.py       HTTP surface and DNS responder lifecycle; no business rules
 dns_server.py DNS wire format, query engine, EDNS revision token; reads a committed snapshot only
 dns_node.py   per-node UDP responder; reads the node's committed snapshot; optional token signing
@@ -212,6 +262,8 @@ every node applies it and every test can reach it.
 | No key recovery | Lost owner key means lost domain | 2-of-3 root break-glass, audited |
 | Single record type | Limited DNS usefulness | `AAAA`, `TXT`, `CNAME` with per-type validation |
 | In-memory read path | Reads may be stale on followers | Lease-based linearizable reads |
+| Publication barrier is opt-in | The unsafe baseline remains the default write path | Make B the default and add a majority-visibility regression test |
+| Barrier timeout is ambiguous | A client cannot know whether a committed write will become visible | Idempotency keys or operation de-duplication |
 | Response-only watermark | A commit no responder has seen cannot raise it | Coordinate with the write path or use a trusted revision source |
 | Majority DNS trust | Two colluding nodes can lie | DNSSEC or signed zone snapshots |
 | One resolver process in the demo | Clients pointed at it depend on it | Replicate the resolver or compare in the stub |

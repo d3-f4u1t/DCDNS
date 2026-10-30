@@ -2,6 +2,12 @@
 
 Generated: 2026-10-27 10:27:17
 
+> **Historical note.** This report predates the final A/B/C consistency
+> comparison (30 October 2026). It remains the last full live
+> security-experiment run; the authoritative current evidence for the central
+> result is [`CONSISTENCY_AUDIT.md`](CONSISTENCY_AUDIT.md). The test count in
+> this repository is now 108, not the count implied by older prose.
+
 Produced by `python scripts/evaluate.py` against a live three-node
 cluster, its per-node DNS responders and the client-facing quorum
 resolver. Every row is the result of a real signed operation, not a

@@ -55,6 +55,11 @@ Query `techfest.cs.test` in the DNS panel. Read the table carefully:
   `signed` tag means it verifies against that node's configured key;
 * the resolver row also shows the watermark and the majority's revisions.
 
+The launcher runs the baseline write path. The publication barrier B is opt-in
+through `--publication-barrier`, so this demo can still exhibit the
+acknowledged-write stale window; the controlled A/B/C comparison in
+`docs/CONSISTENCY_AUDIT.md` is the evidence for B.
+
 > "The resolver is not reading a cached dashboard value. `/query` uses the same
 > decision path as UDP 5353. The direct rows show what each node would say; the
 > resolver row shows what a client would actually receive. Agreement alone is
@@ -156,10 +161,12 @@ and try to update the record.
 
 > "Authority is delegated top-down, ownership is proven cryptographically, state
 > is majority-replicated, every node serves DNS, and the client answer is decided
-> by majority agreement plus revision freshness. The boundaries — a root trust
-> anchor, no Byzantine tolerance, two colluding DNS nodes can lie, no DNSSEC, no
-> key recovery, and a response-only watermark — are documented rather than
-> hidden."
+> by majority agreement plus revision freshness. The primary correctness result
+> is the publication barrier B: a successful write should mean a majority has
+> applied the revision to the state used for DNS. RAM-DNS C is the optional
+> read-side detector. The boundaries — a root trust anchor, no Byzantine
+> tolerance, two colluding DNS nodes can lie, B is opt-in, no DNSSEC, no key
+> recovery, and a response-only watermark — are documented rather than hidden."
 
 ---
 
@@ -188,6 +195,26 @@ python -m dcdns.dig techfest.cs.test --port 5354
 
 The first shows the quorum decision and each node's answer; the second queries
 n1 directly.
+
+### Publication barrier evidence
+
+The controlled comparison is the clearest evidence for the central result:
+
+```powershell
+# Baseline A and detector C
+python scripts/commit_lag_repro.py --trials 3 --hold-delays 0,100,300 `
+  --ram --data data/compare-baseline-final
+
+# Barrier B, same schedule
+python scripts/commit_lag_repro.py --trials 3 --hold-delays 0,100,300 `
+  --ram --publication-barrier --data data/compare-barrier-final
+```
+
+Baseline A left a stale semantic majority after 12 of 12 acknowledged writes.
+Barrier B acknowledged all 3 control writes with zero stale majorities, and all
+9 held writes timed out with `NO_QUORUM` and `"ambiguous": true` before
+converging after release. Detector C returned 0 stale answers but 12 of 12
+`SERVFAIL`. The full tables and raw records are in `docs/CONSISTENCY_AUDIT.md`.
 
 ### Real process failure and recovery
 
@@ -247,11 +274,13 @@ restart it. Use `cluster_smoke.py` when you want real process death.
 > the future work that would give cryptographic proof instead of majority trust."
 
 **"What is RAM-DNS?"**
-> "Revision-aware majority DNS. Each node attaches its serving registry revision
-> to the DNS answer in a signed EDNS option. The resolver first requires the usual
-> semantic majority, then checks that the majority is fresh relative to the
-> committed revision watermark. A stale majority is retried, then refused with
-> SERVFAIL instead of being served as current."
+> "Revision-aware majority DNS, the read-side detector C. Each node attaches its
+> serving registry revision to the DNS answer in a signed EDNS option. The
+> resolver first requires the usual semantic majority, then checks that the
+> majority is fresh relative to the committed revision watermark. A stale
+> majority is retried, then refused with SERVFAIL instead of being served as
+> current. It is defence in depth, not the primary fix; the publication barrier
+> B is the write-path fix."
 
 **"Isn't pausing DNS just cheating?"**
 > "It is failure injection at the DNS layer, and the console labels it as such.
@@ -260,11 +289,13 @@ restart it. Use `cluster_smoke.py` when you want real process death.
 > `cluster_smoke.py`."
 
 **"Why did the resolver briefly return the old address after a write?"**
-> "It should not do that when RAM-DNS is enabled. The resolver checks the serving
-> revision attached to the majority's answers against the committed watermark,
-> retries if the majority is behind, and returns SERVFAIL if it stays stale. The
-> semantic-only mode (`--freshness off`) still has the old behaviour; that mode
-> exists as the experimental baseline, not as the secure default."
+> "The baseline acknowledged after a majority had stored the entry, while the
+> followers applied it only on the next replication push. That is a write-path
+> bug, and B fixes it by waiting for an applied majority before acknowledging.
+> RAM-DNS C detects the stale majority and returns SERVFAIL instead of the old
+> answer; it does not repair the write path. The semantic-only mode
+> (`--freshness off`) exists as the experimental baseline, not as the secure
+> default."
 
 **"What do the resolver votes mean?"**
 > "Each vote is the semantic answer from one node. `no-answer` means the node
@@ -272,11 +303,14 @@ restart it. Use `cluster_smoke.py` when you want real process death.
 > majority of configured responders, so two absent votes cannot form a majority."
 
 **"How do you know it works?"**
-> "97 tests, 9 cluster failure checks, 14 portal flow checks and 12 live
+> "108 tests, 9 cluster failure checks, 14 portal flow checks and 12 live
 > experiments. All reproducible with the commands in the README, and the results
-> file is generated by the same code the demo buttons call. The stale-majority
-> experiment freezes two real DNS snapshots and shows the semantic-only resolver
-> returning the old address while RAM-DNS returns SERVFAIL."
+> file is generated by the same code the demo buttons call. The A/B/C harness
+> adds the controlled comparison: baseline A left 12 of 12 acknowledged writes
+> stale, barrier B acknowledged 3 of 3 controls with no stale majority and
+> failed closed on 9 of 9 held writes, and detector C returned SERVFAIL instead
+> of the stale answer in 12 of 12 cases. The stale-majority experiment freezes
+> two real DNS snapshots to demonstrate the read-side detector."
 
 ---
 
