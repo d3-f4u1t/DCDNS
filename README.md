@@ -34,7 +34,7 @@ node is honest and every committed prefix is internally consistent.
 
 This project makes the gap observable, measures it, and evaluates two responses.
 Variant **B**, a publication barrier, delays the write acknowledgement until a
-majority reports applying the committed revision to the state used for DNS
+majority reports *serving* the committed revision from the state used for DNS
 answers. It is the default write path. Variant **C**, RAM-DNS, leaves the write
 path unchanged and adds per-answer revision evidence plus a freshness condition
 to the client-facing resolver. The experiment finds that B removes the
@@ -45,9 +45,11 @@ staleness and partial connectivity.
 
 The unsafe A baseline remains available for comparison with
 `--no-publication-barrier`, but it is no longer the shipped behaviour: a
-successful write now means the revision is publishable to a majority of DNS
+successful write now means the revision is *served* by a majority of DNS
 responders. A regression test asserts exactly that contract
-(`tests/test_publication_visibility.py`).
+(`tests/test_publication_visibility.py`). If an acknowledgement times out after
+commit, retrying the identical signed operation is safe: the leader
+deduplicates it by `(actor, nonce)` and returns the original result.
 
 ---
 
@@ -170,28 +172,30 @@ becomes:
 ```text
 commit_index >= index
 AND
-a majority of live nodes report dns_revision >= index
+a majority of live nodes report serving_revision >= index
 ```
 
-`_applied_majority(index)` counts the coordinator only after its own
-`_refresh_dns_zone()` has exposed the applied revision, and counts each live
-follower only when its append response reports a `dns_revision` at least as high
-as `index`. If the first replication round commits the entry but the followers
-have not yet applied it, the coordinator performs a second replication push that
-advertises the new commit index, then re-checks the applied majority before
-returning success.
+`_applied_majority(index)` counts the coordinator only when its DNS responder
+would answer from a revision at least as high as `index`, and counts each live
+follower only when its append response reports a `serving_revision` at least as
+high as `index`. The serving revision comes from the responder itself, so a
+responder frozen at an older snapshot still reports the old value even after the
+registry applies the new commit. If the first replication round commits the
+entry but the followers have not yet applied it, the coordinator performs a
+second replication push that advertises the new commit index, then re-checks the
+serving majority before returning success.
 
 The result is a stronger acknowledgement:
 
 > A successful write means the operation is committed **and** a majority of
-> registry nodes have applied the committed revision to the state from which they
-> serve DNS.
+> registry nodes are serving the committed revision through DNS.
 
-If the deadline expires after the entry has committed but before the applied
+If the deadline expires after the entry has committed but before the serving
 majority is reached, the API returns `NO_QUORUM` with `"ambiguous": true`. The
-operation may still become visible later. This is an honest failure contract, but
-it requires client-side idempotency or operation de-duplication before retries
-are safe for non-idempotent operations such as transfers and revocations.
+operation may still become visible later. Retrying the identical signed
+operation is safe because the leader deduplicates `(actor, nonce)`; reusing that
+nonce for different content is rejected with `REPLAY_DETECTED`. A re-signed
+operation is a new write.
 
 ### 3.3 Cost and coverage
 
@@ -200,10 +204,15 @@ comparison, control writes acknowledged at a p50 of **14.80 ms**, versus
 **7.87 ms** for the baseline. The trade is explicit: a slightly later success,
 but success now means the DNS state is actually published.
 
-B closes the ordinary commit/apply window. It does **not** cover a DNS responder
-that is frozen at an older snapshot: the barrier checks the registry's
-`dns_revision`, not the responder's `serving_revision`. That residual gap is one
-reason C remains useful.
+B closes the ordinary commit/apply window, and it checks the responder's
+`serving_revision` rather than only the registry's `dns_revision`. A responder
+that is frozen at an older snapshot therefore cannot count toward the serving
+majority: a write that a majority cannot serve fails closed instead of being
+acknowledged. The stale-majority experiment deliberately disables the barrier
+while it creates the frozen responders, because strict B correctly refuses to
+acknowledge that write. C remains a read-side detector for stale answers that
+arise for other reasons, such as a disabled barrier or a responder that has not
+yet received a commit.
 
 ---
 
@@ -284,16 +293,16 @@ B and C address different failure modes and should not be presented as rival
 | Lookup p50 | 11.25 ms | 11.46 ms (control) | 117.84 ms |
 | Post-ack convergence p50 | 251.88 ms | 22.54 ms (control) | n/a |
 | Repairs the write path | no | **yes** | no |
-| Covers a frozen responder | no | no | **yes, if a newer revision is visible** |
+| Frozen responder cannot satisfy an acknowledgement | no | **yes (write fails closed)** | detects it on the read side |
 | Byzantine-safe | no | no | no |
 
 The intended deployment posture is therefore:
 
 1. **B is the primary correctness mechanism.** A successful write should mean
-   that a majority has published the revision to DNS.
+   that a majority is serving the revision through DNS.
 2. **C is optional defence in depth.** Use it in front of resolvers that cannot
-   assume B, or where responder-level freeze and partial connectivity are in the
-   threat model.
+   assume B, or when the read path must independently detect stale answers and
+   partial connectivity.
 3. **Neither is Byzantine fault tolerance.** B trusts self-reported peer
    revisions; C's signature proves which node made a claim, not that the claim is
    true. Two colluding nodes defeat both.
@@ -336,7 +345,7 @@ Three conditions are compared:
 
 * **A — baseline:** semantic majority; acknowledge after majority storage. Run
   only with `--no-publication-barrier`.
-* **B — barrier (default):** acknowledge after a majority reports applying the
+* **B — barrier (default):** acknowledge after a majority reports serving the
   revision.
 * **C — RAM-DNS:** baseline answers evaluated with F1 freshness, two retries,
   `servfail` policy.
@@ -443,17 +452,20 @@ threats to validity, is in [`docs/ACADEMIC_REVIEW.md`](docs/ACADEMIC_REVIEW.md).
   client behaviour. No production prevalence is claimed.
 * **Non-Byzantine.** B trusts self-reported peer revisions. C's signature proves
   authorship, not truth. Two colluding nodes defeat both.
-* **B does not cover responder freeze.** It checks `dns_revision`, not the
-  responder's `serving_revision`.
+* **Strict B fails closed under responder freeze.** A frozen majority cannot
+  satisfy the barrier, so the write times out ambiguously rather than
+  succeeding. The stale-majority experiment disables the barrier deliberately to
+  create the read-side fault.
 * **C's watermark is incomplete.** If every responder is still at revision `R`,
   C cannot know that `R + 1` exists. F2/F3 with delta 0 can fail closed on
   unrelated updates; F1 is less sensitive when the up-to-date node remains in the
   semantic majority.
 * **No production DNS.** No DNSSEC, anycast, global root, real recursive
   resolvers, or WAN study.
-* **Ambiguous timeouts require idempotency.** B can time out after commit. A
-  retry of a non-idempotent operation must not apply twice; operation
-  de-duplication is a next step, not an implemented guarantee.
+* **Ambiguous timeouts are safe only for identical retries.** B can time out
+  after commit. The leader deduplicates a byte-identical retry by `(actor,
+  nonce)`, but a client that re-signs the operation creates a new write. Nonce
+  storage also grows with the operation count; it is not compacted.
 * **Key custody is demo-grade.** The portal holds private keys; node DNS signing
   keys live under `data/live/node-keys/`.
 
@@ -493,8 +505,8 @@ works too.
 ### Publication barrier (default)
 
 B is on by default, including in `run_demo.py`. A successful write therefore
-means a majority has applied the revision to its DNS state. To reproduce the
-unsafe A baseline for comparison, pass `--no-publication-barrier`:
+means a majority is serving the revision through DNS. To reproduce the unsafe A
+baseline for comparison, pass `--no-publication-barrier`:
 
 ```powershell
 python run_demo.py --fresh --no-publication-barrier
@@ -548,7 +560,7 @@ python scripts/commit_lag_repro.py --trials 10 --hold-delays 0 `
 Latest verification:
 
 ```text
-python -m pytest                 110 passed
+python -m pytest                 114 passed
 python -m compileall -q dcdns scripts tests   OK
 cluster smoke                    9/9 checks passed
 portal flow                      14/14 checks passed
@@ -570,9 +582,10 @@ coordinator catch-up, and write refusal without a majority.
 | Only authorized participants can register a name | Every operation carries a signature; the state machine checks it against the namespace's delegated controller | Experiments → *Cross-namespace write* |
 | Names are unique across the registry | Duplicate registration is rejected deterministically (`NAME_TAKEN`) | Experiments → *Duplicate registration* |
 | One department cannot modify another's names | Authority is a namespace tree; the longest enclosing namespace decides who may act | Experiments → *Forged update* |
-| Operations cannot be replayed | The signed payload includes a nonce that the state machine records | Experiments → *Replay* |
+| Operations cannot be replayed | The signed payload includes a nonce; a byte-identical retry is deduplicated, while nonce reuse with different content is rejected | Experiments → *Replay* |
 | Accepted changes are durable across node loss | A write is committed only after a majority has stored it; with B it is acknowledged only after a majority applies it | `scripts/cluster_smoke.py` |
-| A successful write is publishable to DNS | On by default (B): a majority must report applying the revision; `--no-publication-barrier` restores the A baseline | `tests/test_publication_visibility.py` |
+| A successful write is publishable to DNS | On by default (B): a majority must report *serving* the revision; `--no-publication-barrier` restores the A baseline | `tests/test_publication_visibility.py` |
+| An ambiguous write can be retried safely | The leader deduplicates a byte-identical `(actor, nonce)` retry and returns the original index and revision | `tests/test_publication_visibility.py` |
 | Every change is auditable | Hash-chained audit log; editing one record breaks every later hash | Audit page |
 | Revoked names stop resolving | A node's DNS snapshot excludes revoked domains and namespaces; pending transfers keep their frozen record live | Experiments → *Revocation* |
 | One lying DNS node cannot change the client answer | The resolver requires two of three nodes to return semantically identical answers | Experiments → *Majority DNS resists a lying node* |
@@ -595,15 +608,19 @@ Full click-by-click script: [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 3. **Lose DNS quorum** — click **Pause n2 + n3**. n1 still answers, n2 and n3
    time out, and the resolver returns `SERVFAIL`. The registry APIs stay up.
 4. **Stale majority** — click **Freeze n1 + n2 DNS**, then update
-   `techfest.cs.test` through the console. n1 and n2 keep serving their real
-   frozen snapshot at the old revision, n3 serves the new commit, and the
-   semantic majority is stale. The resolver reports `STALE_MAJORITY`, retries,
-   and returns `SERVFAIL` instead of the old address. **Thaw DNS snapshots**
-   restores the new answer.
-5. **Registry quorum is different** — while DNS is paused or frozen, register or
-   update a name. The write still commits because registry quorum and DNS quorum
-   are separate, and the console's revision counters advance. The resolver still
-   returns `SERVFAIL` if only n1 is answering.
+   `techfest.cs.test` through the console. Strict B now **refuses** the update:
+   the two frozen responders cannot serve the new revision, so it returns an
+   ambiguous `NO_QUORUM` instead of claiming success. To see the read-side
+   detector, run the *Stale majority is detected, not served* experiment, which
+   disables the barrier while it creates the same frozen majority. Then n1 and n2
+   keep serving their real frozen snapshot at the old revision, n3 serves the new
+   commit, the semantic majority is stale, and the resolver reports
+   `STALE_MAJORITY`, retries, and returns `SERVFAIL` instead of the old address.
+   **Thaw DNS snapshots** restores the new answer.
+5. **Registry quorum is different** — while DNS is paused (not frozen), register
+   or update a name. The write still commits and is acknowledged because the
+   responders still hold the current revision; only DNS answering is paused. The
+   resolver still returns `SERVFAIL` if only n1 is answering.
 6. **Recover** — click **Reset DNS faults**. All three nodes answer the current
    committed value, the resolver returns a fresh majority answer, and the banner
    clears.
@@ -717,7 +734,7 @@ The disclosure now incorporates the audit and the academic review:
 
 * Branch: `dashboard-console`. The working tree contains the audit, barrier,
   harness and documentation changes described here.
-* Tests: **110 passed**.
+* Tests: **114 passed**.
 * Compilation: `python -m compileall -q dcdns scripts tests` succeeds.
 * Cluster smoke: **9/9**. Portal flow: **14/14**. Live experiments: **12/12**.
 * B is the default write path; `--no-publication-barrier` runs the unsafe A

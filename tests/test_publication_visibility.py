@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from dcdns import crypto
 from dcdns.cluster import ClusterNode
+from dcdns.errors import RegistryError
 
 NAME = "techfest.cs.test"
 OLD = "10.20.5.42"
@@ -131,7 +134,7 @@ async def _acknowledge_update(
         "name": NAME, "records": {"A": NEW},
     })
     result = await leader.submit(update)
-    return result, nodes, {"n1": leader}
+    return result, nodes, {"n1": leader, "keys": keys, "update": update}
 
 
 def test_acknowledgement_implies_a_majority_serves_the_new_revision(tmp_path):
@@ -184,3 +187,61 @@ def test_baseline_acknowledges_before_a_majority_publishes(tmp_path):
         "the A baseline must acknowledge before followers apply the entry; "
         f"got {serving_new!r}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# retry semantics
+# --------------------------------------------------------------------------- #
+def test_retry_of_committed_write_is_deduplicated(tmp_path):
+    """A byte-identical retry returns the original result and appends nothing.
+
+    This is the client-visible half of the ambiguity contract: after a timeout
+    the client retries the *same signed operation*, and an accepted write must
+    not execute twice.
+    """
+    first, _, extra = asyncio.run(_acknowledge_update(
+        tmp_path, publication_barrier=None,
+    ))
+    leader = extra["n1"]
+    update = extra["update"]
+
+    assert first["deduplicated"] is False
+    log_length = len(leader.log)
+    applied_revision = leader.state.revision
+
+    retry = asyncio.run(leader.submit(update))
+
+    assert retry["ok"] is True
+    assert retry["deduplicated"] is True
+    assert retry["index"] == first["index"]
+    assert retry["revision"] == first["revision"]
+    assert len(leader.log) == log_length, "the retry appended a second entry"
+    assert leader.state.revision == applied_revision, "the retry re-applied the write"
+
+
+def test_same_nonce_with_different_body_is_rejected(tmp_path):
+    """The nonce is a client serial number, not a reusable request id.
+
+    Reusing it for different content would let one acknowledgement be paired
+    with two different effects, so the leader rejects the conflict instead of
+    deduplicating it.
+    """
+    _, _, extra = asyncio.run(_acknowledge_update(
+        tmp_path, publication_barrier=None,
+    ))
+    leader = extra["n1"]
+    update = extra["update"]
+
+    unsigned = crypto.build_unsigned("update_records", {
+        "name": NAME, "records": {"A": "10.20.5.100"},
+    })
+    unsigned["nonce"] = update["nonce"]
+    conflicting = extra["keys"]["alice"].sign_operation(unsigned)
+    assert conflicting["nonce"] == update["nonce"]
+    assert conflicting != update
+
+    with pytest.raises(RegistryError) as exc:
+        asyncio.run(leader.submit(conflicting))
+    assert exc.value.code == "REPLAY_DETECTED"
+
+    assert len(leader.log) == 4, "the conflicting operation consumed a log slot"

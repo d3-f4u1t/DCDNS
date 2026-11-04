@@ -4,6 +4,13 @@
 This is not a peer-reviewed paper, a systematic review, or a legal prior-art
 search. Nothing was committed or pushed.
 
+**Addendum, 4 November 2026.** This review describes the system as it stood on
+31 October. Two findings have since been addressed in the implementation:
+byte-identical retries are deduplicated by `(actor, nonce)` (with conflicting
+reuse rejected), and the publication barrier now checks each responder's
+`serving_revision`, so a frozen responder cannot satisfy it. Items marked
+*addressed* below record the original finding and its resolution.
+
 ## 0. Bottom line
 
 Two questions have to be kept separate.
@@ -322,9 +329,10 @@ exact numbers are not production estimates.
 * **Byzantine tolerance.** B trusts self-reported peer revisions; C's signed
   token proves who made a claim, not that the claim is true. Two colluding nodes
   defeat both.
-* **Responder-freeze coverage for B.** B checks the registry's `dns_revision`,
-  not the responder's `serving_revision`. A frozen responder can still let B
-  acknowledge.
+* **Responder-freeze coverage for B (addressed).** At review time B checked the
+  registry's `dns_revision`, not the responder's `serving_revision`, so a frozen
+  responder could still let B acknowledge. The barrier now checks the serving
+  revision; a frozen responder fails the barrier.
 * **Watermark completeness for C.** If every responder is still at revision `R`,
   C cannot know `R+1` exists. F1 tolerates unrelated updates when the up-to-date
   node is in the semantic majority; F2/F3 with delta 0 can fail closed on
@@ -337,7 +345,7 @@ exact numbers are not production estimates.
 
 | Property | A baseline | B barrier | C RAM-DNS |
 |---|---|---|---|
-| Read-your-writes after an acknowledged write | Violated in 12/12 local trials | Holds on the normal path when a majority has applied | No stale answer, but may return `SERVFAIL` |
+| Read-your-writes after an acknowledged write | Violated in 12/12 local trials | Holds on the normal path when a majority is serving the revision | No stale answer, but may return `SERVFAIL` |
 | Monotonic reads | Not guaranteed | Improved for the normal path; not a general proof | Detects some violations when a newer revision is visible |
 | Bounded staleness | No bound on DNS publication | Majority-applied at ack; not a linearizability proof under failures | Detection depends on watermark evidence |
 | Availability under lag | High (serves stale) | Lower (may time out ambiguously) | Lower (may `SERVFAIL`) |
@@ -479,8 +487,9 @@ claim without a professional search and a broader evaluation.
 
 * Non-Byzantine: B trusts self-reported peer revisions; C's signature proves
   authorship, not truth; two colluding nodes defeat both.
-* B does not cover a frozen responder because it checks `dns_revision`, not
-  `serving_revision`.
+* B at review time did not cover a frozen responder because it checked
+  `dns_revision`, not `serving_revision`. **Addressed:** the barrier now checks
+  the responder's serving revision.
 * C's watermark is incomplete if every responder is stale.
 * F1 tolerates unrelated updates when the up-to-date node is in the semantic
   majority; F2/F3 with delta 0 can fail closed on unrelated updates.
@@ -521,17 +530,20 @@ claim without a professional search and a broader evaluation.
 ### 7.1 Product recommendation
 
 1. **Make B the default.** A successful write should mean "committed and a
-   majority has applied/published the revision to DNS." Keep the unsafe path
-   only as an explicit experiment.
+   majority is serving the revision through DNS." Keep the unsafe path
+   only as an explicit experiment. **Addressed:** B is the default.
 2. **Add an end-to-end majority-visibility regression test.** After a successful
    write, query a majority of DNS responders directly and assert they serve the
    new revision. This is the test that would have caught the original bug.
+   **Addressed:** `tests/test_publication_visibility.py`.
 3. **Add idempotency / operation deduplication.** B can time out after commit; a
    retry of a non-idempotent operation must not apply twice. Raft's client
-   serial numbers are the standard analogy.
+   serial numbers are the standard analogy. **Addressed:** byte-identical
+   retries are deduplicated by `(actor, nonce)`; conflicting reuse is rejected.
 4. **Close B's responder gap.** Have followers report the responder's
    `serving_revision`, not only the registry's `dns_revision`, or keep C in front
-   of the resolver.
+   of the resolver. **Addressed:** the append response and the leader's own
+   barrier check use the responder's serving revision.
 5. **Keep C optional.** Use it for responder freeze, partial connectivity, or
    deployments that cannot enforce B. Choose `servfail` when silent staleness is
    unacceptable; use `marked-stale` only when availability dominates and the

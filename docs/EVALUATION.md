@@ -180,11 +180,11 @@ central result is the acknowledged-write publication gap: baseline A exposed it
 in 12/12 controlled trials and 20/20 natural trials, B closed the normal-path
 window, and C detected the remaining read-side staleness at the cost of
 availability. The limitations — Byzantine faults, two colluding nodes, root-key
-compromise, key recovery, response-only watermark completeness, a frozen
-responder that B does not cover, ambiguous barrier timeouts without
-de-duplication, and real network partitions — are stated in the threat model and
-are not claimed as solved. For a prototype whose research question is
-*delegated authority over campus namespaces plus the boundary between a
-committed write and a publishable DNS answer*, that is the correct boundary: B is
-the write-path fix, C is the optional detector, and the trust anchor, key
-custody and watermark completeness remain documented future work.
+compromise, key recovery, response-only watermark completeness, ambiguous barrier
+timeouts where only a byte-identical retry is safe, and real network partitions —
+are stated in the threat model and are not claimed as solved. For a prototype
+whose research question is *delegated authority over campus namespaces plus the
+boundary between a committed write and a publishable DNS answer*, that is the
+correct boundary: B is the write-path fix, C is the optional detector, and the
+trust anchor, key custody and watermark completeness remain documented future
+work.

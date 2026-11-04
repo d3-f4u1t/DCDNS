@@ -35,6 +35,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -73,6 +74,14 @@ class ClusterNode:
         self.publication_barrier = publication_barrier
         self.peer_commit: dict[str, int] = {peer: 0 for peer in self.peers}
         self.peer_dns_revision: dict[str, int] = {peer: 0 for peer in self.peers}
+        # The revision the DNS responder actually serves. This can be lower
+        # than ``dns_revision`` when the responder is frozen for a fault
+        # experiment. ``create_app`` wires this to the live responder; without
+        # a responder it falls back to the registry's applied revision.
+        self.serving_revision_provider: Callable[[], int] | None = None
+        self.peer_serving_revision: dict[str, int] = {
+            peer: 0 for peer in self.peers
+        }
 
         self.state = RegistryState(root_public=root_public)
         self.log: list[dict] = []
@@ -170,6 +179,22 @@ class ClusterNode:
         self.dns_snapshot = (zone, revision)
         self.dns_zone = zone
         self.dns_revision = revision
+
+    def serving_revision(self) -> int:
+        """Revision the DNS responder would actually answer from.
+
+        With a live responder this reflects a deliberate freeze; without one
+        (unit tests, ``--no-dns``) it degrades to the applied registry
+        revision. The publication barrier uses this value, so a frozen
+        responder cannot satisfy a majority by reporting a registry revision it
+        is not serving.
+        """
+        if self.serving_revision_provider is None:
+            return self.dns_revision
+        try:
+            return int(self.serving_revision_provider())
+        except Exception:
+            return self.dns_revision
 
     def _persist_meta(self) -> None:
         tmp = self._meta_path.with_suffix(".tmp")
@@ -336,6 +361,9 @@ class ClusterNode:
                     self.peer_dns_revision[peer_id] = int(
                         data.get("dns_revision", 0)
                     )
+                    self.peer_serving_revision[peer_id] = int(
+                        data.get("serving_revision", data.get("dns_revision", 0))
+                    )
                 elif data.get("term", 0) > self.term:
                     self.term = int(data["term"])
                     self.leader_id = None
@@ -375,20 +403,19 @@ class ClusterNode:
             self._refresh_dns_zone()
 
     def _applied_majority(self, index: int) -> bool:
-        """True when a majority has applied ``index`` to its DNS snapshot.
+        """True when a majority is *serving* at least ``index``.
 
-        The leader counts itself only after ``_refresh_dns_zone`` has exposed
-        the applied revision. Followers report their own ``dns_revision`` in
-        the append response, which is sent after they have applied the commit.
-        This is a non-Byzantine check: a lying follower could claim a revision
-        it does not have. The point is to close the ordinary acknowledgement
-        window, not to tolerate arbitrary faulty nodes.
+        This checks the responder's serving revision, not only the registry's
+        applied revision. A frozen responder reports its pinned revision and
+        therefore does not count toward the barrier, which is the point: a node
+        that is not serving the new state cannot make the write publishable.
+        Followers report their own value; this remains a non-Byzantine check.
         """
-        if self.dns_revision < index:
+        if self.serving_revision() < index:
             return False
         applied = 1
         for peer in self.live_peers:
-            if self.peer_dns_revision.get(peer, 0) >= index:
+            if self.peer_serving_revision.get(peer, 0) >= index:
                 applied += 1
         return applied >= self.quorum
 
@@ -405,19 +432,37 @@ class ClusterNode:
                 self.rejected += 1
                 raise NotLeader(self.leader_id, self.peers.get(self.leader_id or ""))
 
-            # Validate deterministically before touching the log. This means an
-            # invalid operation never consumes a log slot on any node.
-            try:
-                preview = self.state.probe(op)
-            except RegistryError:
-                self.rejected += 1
-                raise
+            # The signed nonce is the client's serial number. If this exact
+            # operation is already in the log — typically because the client
+            # retried after an ambiguous barrier timeout — return its original
+            # result instead of appending it again. The state machine still
+            # rejects nonce reuse defensively if a duplicate ever reaches a
+            # follower.
+            existing = self._find_existing(op)
+            deduplicated = existing is not None
+            if existing is not None:
+                if existing.get("op") != op:
+                    self.rejected += 1
+                    raise RegistryError(
+                        "REPLAY_DETECTED",
+                        "this operation nonce was already used by a different "
+                        f"operation at index {existing['index']}",
+                    )
+                index = int(existing["index"])
+            else:
+                # Validate deterministically before touching the log. This
+                # means an invalid operation never consumes a log slot.
+                try:
+                    self.state.probe(op)
+                except RegistryError:
+                    self.rejected += 1
+                    raise
 
-            async with self._lock:
-                index = len(self.log) + 1
-                entry = {"index": index, "term": self.term, "op": op}
-                self.log.append(entry)
-                self._persist_entry(entry)
+                async with self._lock:
+                    index = len(self.log) + 1
+                    entry = {"index": index, "term": self.term, "op": op}
+                    self.log.append(entry)
+                    self._persist_entry(entry)
 
             deadline = time.monotonic() + self.write_timeout
             while time.monotonic() < deadline:
@@ -427,47 +472,66 @@ class ClusterNode:
                         not self.publication_barrier
                         or self._applied_majority(index)
                     ):
-                        return self._write_result(index, preview)
+                        return self._write_result(index, deduplicated)
                     # The entry is committed, but followers learned the previous
                     # commit index in the push above. Push the new commit index
-                    # and require a majority of applied DNS snapshots before
+                    # and require a majority of *serving* responders before
                     # acknowledging.
                     await self._replicate()
                     if self._applied_majority(index):
-                        return self._write_result(index, preview)
+                        return self._write_result(index, deduplicated)
                 await asyncio.sleep(0.02)
 
             if self.commit_index >= index:
                 raise NoQuorum(
                     "operation committed, but a majority did not apply it to "
                     "the DNS state before the deadline; it may become visible "
-                    "later (ambiguous write)",
+                    "later (ambiguous write); retry the identical signed "
+                    "operation to deduplicate",
                     ambiguous=True,
                 )
             raise NoQuorum(
                 "operation was appended to the leader log but did not reach a "
-                "majority in time; it may still commit later (ambiguous write)",
+                "majority in time; it may still commit later (ambiguous write); "
+                "retry the identical signed operation to deduplicate",
                 ambiguous=True,
             )
 
-    def _write_result(self, index: int, preview: dict) -> dict:
+    def _find_existing(self, op: dict) -> dict | None:
+        """Return the log entry for this ``(actor, nonce)``, if any."""
+        actor = op.get("actor")
+        nonce = op.get("nonce")
+        for entry in self.log:
+            candidate = entry.get("op") or {}
+            if candidate.get("actor") == actor and candidate.get("nonce") == nonce:
+                return entry
+        return None
+
+    def _write_result(self, index: int, deduplicated: bool = False) -> dict:
+        if index < 1 or index > len(self.state.history):
+            raise NoQuorum(
+                "operation is committed but its applied result is unavailable",
+                ambiguous=True,
+            )
+        record = self.state.history[index - 1]
         return {
             "ok": True,
             "committed": True,
             # ``barrier`` means this acknowledgement also satisfies the
-            # publication barrier: a majority has applied the revision to its
-            # DNS state. ``commit`` is the unsafe baseline, kept only for
-            # experiments.
+            # publication barrier: a majority is *serving* the revision.
+            # ``commit`` is the unsafe baseline, kept only for experiments.
             "publication": (
                 "barrier" if self.publication_barrier else "commit"
             ),
             "publication_barrier": self.publication_barrier,
             "index": index,
-            "revision": preview["revision"],
-            "op": preview["op"],
-            "target": preview["target"],
-            "detail": preview["detail"],
+            "revision": record["revision"],
+            "op": record["op"],
+            "target": record["target"],
+            "detail": record["detail"],
             "term": self.term,
+            "serving_revision": self.serving_revision(),
+            "deduplicated": deduplicated,
         }
 
     # ------------------------------------------------------------------ #
@@ -510,6 +574,7 @@ class ClusterNode:
             "commit_hold": self.commit_hold,
             "revision": self.state.revision,
             "dns_revision": self.dns_revision,
+            "serving_revision": self.serving_revision(),
         }
 
     async def set_commit_hold(self, held: bool) -> dict:
@@ -544,6 +609,7 @@ class ClusterNode:
             "commit_hold": self.commit_hold,
             "applied_revision": self.state.revision,
             "dns_revision": self.dns_revision,
+            "serving_revision": self.serving_revision(),
             "log_length": len(self.log),
         }
 
@@ -563,6 +629,7 @@ class ClusterNode:
             "publication_barrier": self.publication_barrier,
             "peer_commit": dict(self.peer_commit),
             "peer_dns_revision": dict(self.peer_dns_revision),
+            "peer_serving_revision": dict(self.peer_serving_revision),
             "revision": self.state.revision,
             "log_length": len(self.log),
             "peers": sorted(self.peers),
@@ -577,5 +644,7 @@ class ClusterNode:
             "namespace_count": len(self.state.namespaces),
             "dns_port": self.dns_port,
             "dns_revision": self.dns_revision,
+            "serving_revision": self.serving_revision(),
+            "serving_lag": max(0, self.dns_revision - self.serving_revision()),
             "zone_size": len(self.dns_zone),
         }
