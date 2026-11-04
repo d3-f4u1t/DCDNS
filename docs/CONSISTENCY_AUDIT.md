@@ -279,7 +279,7 @@ timeouts rather than read outcomes.
 | Post-ack convergence p50 | 251.88 ms | 22.54 ms (control) | n/a |
 | Retries | 0 | 0 | 24 total, 2 per query |
 | Fixes the write path? | no | **yes** | no |
-| Covers responder freeze? | no | no (checks state revision) | **yes, if a newer revision is visible** |
+| Covers responder freeze? | no | **yes (refuses the write)** | **yes, if a newer revision is visible** |
 | Byzantine-safe? | no | no | no |
 
 Interpretation:
@@ -296,10 +296,11 @@ Interpretation:
   was fixed, or where the DNS responder itself can be frozen.
 
 B and C are complementary, not alternatives. B fixes the ordinary replication
-window. C covers a different fault: a responder that is pinned to an old
-snapshot even though the registry has applied a newer revision. B's current
-check uses `node.dns_revision` (state revision), not the responder's
-`serving_revision`, so a frozen responder can still let B acknowledge.
+window and checks the responder's actual `serving_revision`, so a responder
+pinned to an old snapshot cannot count toward the serving majority. C remains a
+read-side detector for stale answers that arise for other reasons, such as a
+disabled barrier, an update that has not yet reached any responder, or a
+deployment that cannot enforce B.
 
 ---
 
@@ -316,7 +317,9 @@ check uses `node.dns_revision` (state revision), not the responder's
 | Revocation | Held follower applies revocation on release and removes the name from the DNS snapshot | `test_revocation_removes_name_from_dns_snapshot_on_release`; portal flow 14/14 |
 | NXDOMAIN | Revision token attached to negative answers; stale NXDOMAIN majority rejected by default | `tests/test_ram_dns.py` |
 | False revision claim, one node | `watermark=responses` can be forced to `SERVFAIL`; `watermark=quorum` resists one liar but cannot detect a stale majority | `test_quorum_watermark_resists_a_single_fake_high_revision` |
-| False revision claim, barrier | B trusts a peer's self-reported `dns_revision`; a lying peer can defeat it | `test_barrier_trusts_self_reported_peer_revision` |
+| False revision claim, barrier | B trusts a peer's self-reported serving revision; a lying peer can defeat it | `test_barrier_trusts_self_reported_peer_revision` |
+| Frozen responder, strict B | The frozen responder cannot satisfy the barrier, so the write times out ambiguously instead of being acknowledged | `test_barrier_requires_the_responder_to_serve_the_revision`; `test_create_app_barrier_uses_the_frozen_responder_revision` |
+| Retry after ambiguous timeout | A byte-identical retry returns the original index and revision, appends nothing, and reports `deduplicated: true`; a conflicting nonce is rejected | `test_retry_of_committed_write_is_deduplicated`; `test_same_nonce_with_different_body_is_rejected` |
 | Unrelated update | F1 passes when the up-to-date node is in the semantic majority; F2/F3 with delta 0 can fail closed on the lagging members | `test_f1_tolerates_unrelated_update_when_answer_is_unchanged`; no live unrelated-update trial |
 | Two colluding nodes | Both A and C can be defeated | Documented limitation; not BFT |
 
@@ -329,10 +332,12 @@ Two behaviours deserve emphasis:
    of the majority at the watermark, so the same unrelated update can make them
    fail closed. The comparison used F1, so this did not affect the numbers. A
    per-name revision would make all three conditions precise.
-2. **B does not cover a frozen responder.** `handle_append()` returns the
-   registry's `dns_revision`, while the DNS responder can be frozen at an older
-   `serving_revision`. A future B should report the responder's serving
-   revision, or C should remain in front of the resolver.
+2. **B now covers a frozen responder.** `handle_append()` returns the
+   responder's `serving_revision`, and the leader's own barrier check reads its
+   responder in the same way. A frozen responder therefore fails the barrier
+   instead of satisfying it. The stale-majority experiment disables the barrier
+   deliberately while it creates the frozen majority, because strict B would
+   correctly refuse to acknowledge that write.
 
 ---
 
@@ -403,24 +408,25 @@ filing or public claim.
 ## 6. Recommendation
 
 1. **Adopt B as the default write-path behaviour.** The barrier is the
-   standard, minimal fix: acknowledge only after a majority has applied the
+   standard, minimal fix: acknowledge only after a majority is serving the
    committed revision. Keep the flag for experiments, but do not leave the
    unsafe path as the default in a system that advertises `committed: true`.
 2. **Make the acknowledgement contract explicit.** A success should mean "the
-   write is committed and a majority has published it to DNS." A timeout after
+   write is committed and a majority is serving it through DNS." A timeout after
    commit should keep returning `ambiguous: true`; clients must not assume the
    write failed.
-3. **Add idempotency or operation de-duplication.** With B, a timeout can occur
-   after commit. A client retry of a non-idempotent operation (transfer, revoke)
-   must not apply twice.
+3. ~~Add idempotency or operation de-duplication.~~ **Done:** the leader
+   deduplicates a byte-identical `(actor, nonce)` retry and returns the original
+   result; reusing the nonce for different content is rejected with
+   `REPLAY_DETECTED`. Nonce storage remains unbounded.
 4. **Keep C as optional defence-in-depth.** It is valuable for responder-level
    freeze, partial connectivity, and deployments that cannot enforce B. It is
    not a substitute for B. Choose `servfail` when silent staleness is
    unacceptable; choose `marked-stale` only when availability dominates and the
    client can understand the marker.
-5. **Close B's responder gap.** Either have followers report their responder's
-   `serving_revision` in the append response, or keep C in front of the
-   resolver. Do not claim B covers a frozen DNS responder until this is done.
+5. ~~Close B's responder gap.~~ **Done:** followers report their responder's
+   `serving_revision` in the append response, and the leader checks its own
+   responder revision. A frozen DNS responder can no longer let B acknowledge.
 6. **Do not claim novelty.** Treat RAM-DNS as a well-engineered detection layer
    and a useful teaching/demo artifact. If a patent or paper is still desired,
    narrow the claim to the DNS-specific encoding/policy combination and run a
@@ -438,8 +444,10 @@ filing or public claim.
 * **Non-Byzantine.** B trusts self-reported peer revisions. C's signed token
   proves which node made a claim, not that the claim is true. Two colluding
   nodes defeat both. Neither is BFT.
-* **B does not cover responder freeze.** The barrier checks registry state, not
-  the responder's serving snapshot.
+* **Strict B fails closed under responder freeze.** A frozen majority cannot
+  satisfy the barrier, so the write times out ambiguously rather than
+  succeeding. The stale-majority experiment disables the barrier deliberately to
+  create the read-side fault.
 * **C's watermark is incomplete.** If every responder is still at revision `R`,
   C cannot know that `R+1` exists. F2/F3 with delta 0 also treat unrelated
   global revisions as staleness; F1 is less sensitive because the up-to-date
@@ -513,10 +521,13 @@ No commit or push was performed.
    responders.~~ **Done:** B is the default, and
    `tests/test_publication_visibility.py` covers both the barrier contract and
    the A baseline that violates it.
-2. Add idempotency keys / operation deduplication so ambiguous timeouts are safe
-   to retry.
-3. Make B report the responder's `serving_revision`, not only the registry
-   `dns_revision`, or explicitly document that C is required in front of B.
+2. ~~Add idempotency keys / operation deduplication so ambiguous timeouts are safe
+   to retry.~~ **Done:** byte-identical retries are deduplicated by
+   `(actor, nonce)`; conflicting reuse is rejected.
+3. ~~Make B report the responder's `serving_revision`, not only the registry
+   `dns_revision`, or explicitly document that C is required in front of B.~~
+   **Done:** the append response and the leader's own barrier check use the
+   responder's serving revision.
 4. Add live integration coverage for NXDOMAIN, revocation, restart and
    consecutive updates under the hold fault. The unit tests now cover the state
    transitions; the HTTP/DNS path should be exercised end to end.

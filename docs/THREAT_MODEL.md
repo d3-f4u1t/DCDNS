@@ -54,10 +54,17 @@ verification. There is no unsigned field that affects state.
 
 ### T3 — Replay
 *Attack:* resubmit a previously accepted operation.
-*Mitigation:* each operation carries a nonce; accepted nonces are recorded in
-state. Replay is rejected deterministically on every node.
+*Mitigation:* each operation carries a nonce. At the cluster ingress, a
+byte-identical retry is deduplicated: the leader returns the original index and
+revision with `"deduplicated": true` and appends nothing. Reusing the nonce for
+different content is rejected with `REPLAY_DETECTED`, and the state machine
+records accepted nonces and rejects any reuse defensively.
 *Residual:* nonces are stored indefinitely, so state grows with operation count.
-*Test:* `test_replayed_operation_rejected`, experiment *Replay*.
+Deduplication requires a byte-identical retry; re-signing the operation creates
+a new nonce and is a new write.
+*Test:* `test_retry_of_committed_write_is_deduplicated`,
+`test_same_nonce_with_different_body_is_rejected`,
+`test_replayed_operation_rejected`, experiment *Replay*.
 
 ### T4 — Cross-namespace modification
 *Attack:* a department modifies another department's names.
@@ -165,17 +172,20 @@ window the coordinator serves the new revision and the followers serve the old
 one, so a semantic DNS majority can return the old address after the client was
 told the write succeeded. This is a commit/apply gap, not Byzantine behaviour.
 *Mitigation:* the publication barrier B, enabled by default, acknowledges
-only after a majority reports applying the committed revision to the DNS state.
+only after a majority of responders reports *serving* the committed revision.
 If that condition cannot be met before the deadline, the API returns `NO_QUORUM`
 with `"ambiguous": true` rather than falsely succeeding. RAM-DNS C can detect a
 remaining stale majority on the read side, but it does not repair the write path.
-*Residual:* B adds one replication round trip and can time out after commit, so
-non-idempotent retries need client-side de-duplication. B checks the registry's
-`dns_revision`, not the responder's `serving_revision`, so a frozen responder can
-still let B acknowledge. B trusts self-reported peer revisions and is not
-Byzantine-safe. `--no-publication-barrier` restores the unsafe A baseline.
+*Residual:* B adds one replication round trip and can time out after commit.
+Retrying the identical signed operation is safe because the leader deduplicates
+`(actor, nonce)`; a re-signed operation is a new write. A frozen responder
+cannot satisfy the barrier, so a write that a majority cannot serve fails closed
+instead of being acknowledged. The stale-majority experiment deliberately
+disables the barrier to create that read-side fault. B trusts self-reported peer
+revisions and is not Byzantine-safe. `--no-publication-barrier` restores the
+unsafe A baseline.
 *Test:* A/B/C harness (`scripts/commit_lag_repro.py`), `tests/test_commit_hold.py`,
-and `docs/CONSISTENCY_AUDIT.md`.
+`tests/test_publication_visibility.py`, and `docs/CONSISTENCY_AUDIT.md`.
 
 ---
 
@@ -207,7 +217,7 @@ verifies it itself; it does not rely on the forwarding node having done so.
 | Two colluding DNS nodes | High | Majority trust boundary; DNSSEC/signed zones not built |
 | Stale majority | High | Detected by RAM-DNS F1/F2/F3; fails closed after bounded retries |
 | Acknowledged write not yet publishable | High | B is the default and closes the normal path; A requires `--no-publication-barrier`; C can detect the read-side symptom; see the audit |
-| Ambiguous barrier timeout | Medium | The write may commit after `NO_QUORUM`; idempotency/de-duplication is not implemented |
+| Ambiguous barrier timeout | Medium | The write may commit after `NO_QUORUM`; a byte-identical retry is deduplicated, but a re-signed retry is a new write |
 | Single false-high revision | Medium | Can force fail-closed under `responses` watermark; signed tokens identify the claimant, `quorum` watermark is an alternative |
 | Watermark completeness | Medium | Response-based watermark cannot see a commit no responder has seen |
 | Portal holds private keys | High in production | Demo-only; documented in the UI |
@@ -224,11 +234,10 @@ verifies it itself; it does not rely on the forwarding node having done so.
 * That the system eliminates central authority. The root authority remains.
 * That it resists a malicious registry node.
 * That two colluding DNS nodes cannot lie.
-* That B covers a responder frozen after applying the revision. B checks the
-  registry's `dns_revision`, not the responder's `serving_revision`; C is the
-  read-side detector for that case.
-* That B or C is Byzantine fault tolerance. B trusts self-reported peer
-  revisions; C's signature proves authorship, not truth.
+* That B is Byzantine-safe. It trusts self-reported peer serving revisions;
+  C's signature proves authorship, not truth.
+* That a retry with a newly signed operation is deduplicated. Idempotency
+  requires the identical signed envelope and nonce.
 * That DNS answers are DNSSEC-signed. The EDNS revision token attests revision
   metadata, not the answer; DNSSEC is not implemented.
 * That it is a production PKI. Key enrolment and recovery are specified, not

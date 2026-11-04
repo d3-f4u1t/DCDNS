@@ -53,7 +53,7 @@ def create_app(
         except Exception:
             signer = None
     responder: NodeDNSResponder | None = None
-    if dns_port:
+    if dns_port is not None:
         responder = NodeDNSResponder(
             node_id=node_id,
             host="127.0.0.1",
@@ -64,6 +64,10 @@ def create_app(
             chaos_enabled=chaos,
             signer=signer,
         )
+        # The barrier must check what the responder actually serves, not only
+        # what the registry has applied. A frozen responder therefore stops
+        # counting toward the applied majority.
+        node.serving_revision_provider = lambda: responder.serving_snapshot()[1]
 
     app = FastAPI(
         title=f"DCDNS registry node {node_id}",
@@ -73,6 +77,7 @@ def create_app(
     )
     app.state.cluster = node
     app.state.node_id = node_id
+    app.state.dns_responder = responder
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -467,6 +472,35 @@ def create_app(
         held = bool(payload.get("held", payload.get("hold", True)))
         state = await node.set_commit_hold(held)
         return {"ok": True, "node_id": node_id, **state}
+
+    @app.post("/internal/replication/barrier")
+    async def internal_replication_barrier(payload: dict) -> dict:
+        """Enable or disable the publication barrier (fault injection).
+
+        The stale-majority experiment freezes two DNS responders. A strict
+        barrier correctly refuses to acknowledge a write that a majority cannot
+        serve, so the experiment disables the barrier while it creates that
+        fault and restores it afterwards. Disabled unless ``--chaos`` is set.
+        """
+        if not chaos:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "CHAOS_DISABLED",
+                        "message": "this node was not started with --chaos",
+                    },
+                },
+            )
+
+        enabled = bool(payload.get("enabled", True))
+        node.publication_barrier = enabled
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "publication_barrier": enabled,
+        }
 
     return app
 

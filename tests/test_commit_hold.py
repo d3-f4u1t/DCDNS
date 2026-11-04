@@ -123,17 +123,21 @@ def test_applied_majority_counts_dns_snapshots(tmp_path):
 
     node.dns_revision = 5
     node.peer_dns_revision = {"n2": 5, "n3": 4}
+    node.peer_serving_revision = {"n2": 5, "n3": 4}
     assert node._applied_majority(5) is True
 
     node.peer_dns_revision = {"n2": 4, "n3": 5}
+    node.peer_serving_revision = {"n2": 4, "n3": 5}
     assert node._applied_majority(5) is True
 
     node.peer_dns_revision = {"n2": 4, "n3": 4}
+    node.peer_serving_revision = {"n2": 4, "n3": 4}
     assert node._applied_majority(5) is False
 
     # The leader itself must have published the revision too.
     node.dns_revision = 4
     node.peer_dns_revision = {"n2": 5, "n3": 5}
+    node.peer_serving_revision = {"n2": 5, "n3": 5}
     assert node._applied_majority(5) is False
 
 
@@ -216,10 +220,12 @@ def test_applied_majority_ignores_unavailable_nodes(tmp_path):
     node.live_peers = {"n2"}
     node.dns_revision = 5
     node.peer_dns_revision = {"n2": 5, "n3": 0}
+    node.peer_serving_revision = {"n2": 5, "n3": 0}
     assert node._applied_majority(5) is True
 
     # If the only available follower is behind, the barrier must not pass.
     node.peer_dns_revision = {"n2": 4, "n3": 0}
+    node.peer_serving_revision = {"n2": 4, "n3": 0}
     assert node._applied_majority(5) is False
 
 
@@ -241,7 +247,73 @@ def test_barrier_trusts_self_reported_peer_revision(tmp_path):
     node.live_peers = {"n2", "n3"}
     node.dns_revision = 5
     node.peer_dns_revision = {"n2": 5, "n3": 5}
+    node.peer_serving_revision = {"n2": 5, "n3": 5}
     assert node._applied_majority(5) is True
+
+
+def test_barrier_requires_the_responder_to_serve_the_revision(tmp_path):
+    """Applied revision is not enough: the responder must actually serve it.
+
+    A frozen responder keeps its pinned revision while the registry continues
+    to apply commits. Counting the registry revision would let a write be
+    acknowledged while a majority of DNS answers are still stale.
+    """
+    keys = _keys()
+    node = ClusterNode(
+        node_id="n1",
+        url="http://127.0.0.1:1",
+        peers={"n2": "http://127.0.0.1:2", "n3": "http://127.0.0.1:3"},
+        data_dir=tmp_path / "n1",
+        root_public=keys["root"].public_key,
+    )
+    node.live_peers = {"n2", "n3"}
+    node.dns_revision = 5
+    node.peer_dns_revision = {"n2": 5, "n3": 5}
+    node.peer_serving_revision = {"n2": 5, "n3": 5}
+    assert node._applied_majority(5) is True
+
+    # The leader's registry applied 5 but its responder is frozen at 4.
+    node.serving_revision_provider = lambda: 4
+    assert node._applied_majority(5) is False
+
+    # Two frozen followers report registry revision 5 but serve 4. One live
+    # responder is not a majority, so the barrier must refuse.
+    node.serving_revision_provider = lambda: 5
+    node.peer_serving_revision = {"n2": 4, "n3": 4}
+    assert node._applied_majority(5) is False
+
+    # One frozen responder still leaves a serving majority (leader + n2).
+    node.peer_serving_revision = {"n2": 5, "n3": 4}
+    assert node._applied_majority(5) is True
+
+
+def test_create_app_barrier_uses_the_frozen_responder_revision(tmp_path):
+    keys = _keys()
+    app = create_app(
+        "n1",
+        "http://127.0.0.1:1",
+        {},
+        str(tmp_path / "n1"),
+        keys["root"].public_key,
+        dns_port=0,
+        chaos=True,
+    )
+    node = app.state.cluster
+    responder = app.state.dns_responder
+    assert responder is not None
+
+    node.dns_snapshot = ({NAME: OLD}, 7)
+    node.dns_revision = 7
+    responder.set_frozen(True)
+
+    # The registry keeps applying, but the responder keeps serving revision 7.
+    node.dns_snapshot = ({NAME: NEW}, 8)
+    node.dns_revision = 8
+
+    assert node.serving_revision_provider is not None
+    assert node.serving_revision() == 7
+    assert node.dns_revision == 8
+    assert node._applied_majority(8) is False
 
 
 def test_restart_clears_transient_hold_and_pending_commit(tmp_path):

@@ -81,9 +81,13 @@ being replayed in another protocol.
 part of state-machine decisions, which keeps the machine time-independent and
 therefore deterministic across nodes.
 
-`nonce` is recorded on acceptance. Re-submitting an accepted operation fails
-with `REPLAY_DETECTED`. Rejected operations consume nothing, so they fail the
-same deterministic way every time.
+`nonce` is the client's serial number. A byte-identical retry of an accepted
+operation is deduplicated at the cluster ingress: the leader returns the
+original index and revision with `"deduplicated": true` and appends nothing.
+Reusing the same `(actor, nonce)` for different content fails with
+`REPLAY_DETECTED`; the state machine also rejects any nonce reuse defensively.
+Rejected operations consume nothing, so they fail the same deterministic way
+every time.
 
 ---
 
@@ -204,7 +208,7 @@ suggestion to the client.
 | `UNSUPPORTED_VERSION` | `v` is not 1 |
 | `UNKNOWN_OPERATION` | `op` not in the operation table |
 | `INVALID_SIGNATURE` | Signature does not verify against `actor` |
-| `REPLAY_DETECTED` | `(actor, nonce)` already accepted |
+| `REPLAY_DETECTED` | `(actor, nonce)` reused for different content, or seen again by the state machine |
 | `STALE_OPERATION` | Timestamp outside the ingress freshness window |
 | `INVALID_NAME` / `OUTSIDE_ROOT_ZONE` | Name syntax or zone violation |
 | `INVALID_RECORDS` / `UNSUPPORTED_RECORD_TYPE` / `RECORD_NOT_ALLOWED` | Record policy violation |
@@ -230,12 +234,14 @@ suggestion to the client.
   push advertises the new commit index, so an immediate DNS query can observe a
   stale semantic majority.
 * **Publication barrier (B).** Enabled by default. A write is acknowledged only
-  after a majority reports applying the committed revision to the state used for
-  DNS answers. If the entry commits but the applied majority is not reached
-  before the deadline, the API returns `NO_QUORUM` with `"ambiguous": true`. The
-  operation may still become visible later, so a non-idempotent retry requires
-  client-side de-duplication. `--no-publication-barrier` restores the A
-  baseline.
+  after a majority of live nodes reports that its DNS responder is *serving* the
+  committed revision. The check uses each responder's `serving_revision`, not
+  only the registry's applied revision, so a responder frozen at an older
+  snapshot does not count toward the majority. If the entry commits but a
+  serving majority is not reached before the deadline, the API returns
+  `NO_QUORUM` with `"ambiguous": true`. The operation may still become visible
+  later; retry the identical signed operation, which the leader deduplicates.
+  `--no-publication-barrier` restores the A baseline.
 * A follower applies entries only up to the leader's committed index.
 * Reads are served from local committed state and may lag briefly;
   `GET /domains/{name}?consistent=true` forces a leader read.
@@ -243,7 +249,7 @@ suggestion to the client.
 Guarantees provided: **majority durability**, **total order of accepted
 operations**, **convergence after reconnection**, **continued writes while one
 of three nodes is down**, **write refusal without a majority**, and, with B
-enabled, **acknowledgement only after an applied majority**.
+enabled, **acknowledgement only after a majority is serving the revision**.
 
 For DNS, every node serves the committed state it holds. A lagging follower may
 answer from a slightly older revision; the quorum resolver exposes this by
@@ -315,13 +321,14 @@ hold node public keys to verify revision tokens.
 
 **Write-path publication barrier (B).** The primary fix for the
 acknowledged-write stale-majority window is B, not the read-side freshness
-check. With `--publication-barrier`, a write is acknowledged only when a
-majority of live nodes reports a DNS revision at least as high as the committed
-index. The barrier checks the registry's `dns_revision`, not the responder's
-`serving_revision`; a responder frozen after the registry applied the revision
-can therefore still let B acknowledge. B is non-Byzantine and trusts
-self-reported peer revisions. Its cost is one replication round trip, and its
-timeout can be ambiguous after commit.
+check. With the barrier (the default), a write is acknowledged only when a
+majority of live nodes reports a DNS *serving* revision at least as high as the
+committed index. The barrier checks the responder's `serving_revision`, so a
+responder frozen after the registry applied the revision cannot count toward
+the majority. B is non-Byzantine and trusts self-reported peer revisions. Its
+cost is one replication round trip, and its timeout can be ambiguous after
+commit; retrying the identical signed operation is safe because the leader
+deduplicates it by `(actor, nonce)`.
 
 **Read-side freshness (C).** RAM-DNS is an optional detector layered on the
 resolver. It can refuse a stale majority, including a frozen responder, when a
@@ -378,7 +385,8 @@ each is covered by an automated check:
 2. A forged update is rejected and leaves the record unchanged.
 3. Cross-namespace writes and delegations are rejected.
 4. A tampered signature is rejected.
-5. A replayed operation is rejected.
+5. A byte-identical retry is deduplicated; nonce reuse with different content is
+   rejected.
 6. Prohibited destinations are rejected.
 7. Transfer requires both parties.
 8. Revocation removes the name from DNS.
@@ -393,5 +401,6 @@ each is covered by an automated check:
 15. Revision metadata is bound to the node, revision and zone digest, and an
     invalid signature fails closed when a key is configured.
 16. With the publication barrier enabled, an acknowledged write is followed by a
-    majority whose DNS revision includes the committed revision; if that
-    condition cannot be met, the write fails closed with an ambiguous timeout.
+    majority whose DNS responder serves at least the committed revision; if that
+    condition cannot be met, the write fails closed with an ambiguous timeout,
+    and a byte-identical retry is deduplicated.

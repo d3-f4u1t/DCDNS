@@ -72,7 +72,7 @@ EXPERIMENTS = [
         "id": "replay",
         "title": "Replay of a valid operation",
         "description": "A previously accepted, correctly signed operation is submitted a second time byte-for-byte.",
-        "expectation": "rejected with REPLAY_DETECTED",
+        "expectation": "deduplicated: same revision, no second apply",
     },
     {
         "id": "malicious_record",
@@ -291,6 +291,24 @@ class ExperimentRunner:
         response.raise_for_status()
         return response.json()
 
+    def _set_barrier(self, node_id: str, enabled: bool) -> dict:
+        """Toggle the publication barrier on one node (loopback fault injection)."""
+        api = self.node_apis.get(node_id)
+        if not api:
+            raise RuntimeError(f"no API URL configured for {node_id}")
+        response = httpx.post(
+            f"{api}/internal/replication/barrier",
+            json={"enabled": enabled},
+            timeout=3.0,
+        )
+        if response.status_code == 404:
+            raise RuntimeError(
+                f"barrier toggle on {node_id} is disabled; "
+                "start the demo with node chaos enabled"
+            )
+        response.raise_for_status()
+        return response.json()
+
     # -- experiments ------------------------------------------------------ #
     def run(self, experiment_id: str) -> Result:
         handler = getattr(self, f"_run_{experiment_id}", None)
@@ -361,16 +379,19 @@ class ExperimentRunner:
             "name": self._unique("replay"), "records": {"A": "10.20.5.72"},
         })
         first = self.client.submit(op)
-        try:
-            self.client.submit(op)
-        except ClusterError as exc:
-            return Result(
-                exc.code == "REPLAY_DETECTED",
-                f"first submission committed at revision {first['revision']}; "
-                f"replay rejected with {exc.code}",
-                {"code": exc.code},
-            )
-        return Result(False, "replayed operation was accepted", {})
+        second = self.client.submit(op)
+        deduplicated = (
+            second.get("index") == first.get("index")
+            and second.get("revision") == first.get("revision")
+            and second.get("deduplicated") is True
+        )
+        return Result(
+            deduplicated,
+            f"first submission committed at revision {first['revision']}; "
+            f"byte-identical replay returned revision {second.get('revision')} "
+            f"(deduplicated={second.get('deduplicated')})",
+            {"first": first, "second": second},
+        )
 
     def _run_malicious_record(self) -> Result:
         return self._expect_rejection(
@@ -518,14 +539,25 @@ class ExperimentRunner:
 
         baseline: QuorumResolver | None = None
         ram: QuorumResolver | None = None
+        barrier_nodes = sorted(self.node_apis)
+        barrier_disabled = False
         try:
             for node_id in lagging:
                 self._freeze_dns(node_id, True)
+
+            # A strict barrier checks the serving revision, so it now refuses
+            # to acknowledge a write that two frozen responders cannot serve.
+            # Disable it temporarily to create the stale majority the read-side
+            # detector is meant to catch, then restore it in ``finally``.
+            for node_id in barrier_nodes:
+                self._set_barrier(node_id, False)
+            barrier_disabled = True
 
             commit = self._submit(
                 "alice", "update_records",
                 {"name": name, "records": {"A": target}},
             )
+            _ = commit
 
             # Wait until the unfrozen node serves the new answer.
             direct = Resolver(*self.dns_nodes[current])
@@ -569,6 +601,12 @@ class ExperimentRunner:
             ram_detail = ram.resolve_detail(packet)
             live_detail = self.resolver.query_detail(name)
         finally:
+            if barrier_disabled:
+                for node_id in barrier_nodes:
+                    try:
+                        self._set_barrier(node_id, True)
+                    except Exception:
+                        pass
             for node_id in lagging:
                 try:
                     self._freeze_dns(node_id, False)
@@ -614,6 +652,7 @@ class ExperimentRunner:
             f"({ram_detail.get('reason')}); "
             f"live resolver {live_detail.get('rcode_name')}"
             + (", marked stale" if live_detail.get("stale") else "")
+            + "; barrier disabled to create the fault"
             + (
                 f"; fresh answer after {convergence:.2f}s"
                 if convergence is not None
@@ -629,6 +668,7 @@ class ExperimentRunner:
                 "lagging_nodes": lagging,
                 "current_node": current,
                 "commit_revision": commit.get("revision"),
+                "barrier_disabled_to_create_fault": True,
                 "baseline": baseline_detail,
                 "ram_dns": ram_detail,
                 "live": {

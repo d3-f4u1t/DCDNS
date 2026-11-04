@@ -116,6 +116,13 @@ not a revision gap, is what keeps the resolver at `SERVFAIL`.
 Click **Reset DNS faults**, then click **Freeze n1 + n2 DNS**. Go to **Domains**
 and update `techfest.cs.test` to a new address.
 
+Under strict B this manual update now **fails closed** with an ambiguous
+`NO_QUORUM`: the two frozen responders cannot serve the new revision, so a
+majority cannot satisfy the barrier. That refusal is the barrier working. To
+show the read-side detector instead, run the *Stale majority is detected, not
+served* experiment, which deliberately disables the barrier while it creates the
+same frozen majority. With the fault in place:
+
 * n1 and n2 keep serving their real frozen snapshot at the old revision;
 * n3 serves the new committed address;
 * the semantic-only resolver would accept the old address because n1 and n2
@@ -125,10 +132,11 @@ and update `techfest.cs.test` to a new address.
 * the resolver decision stream shows the watermark and each node's revision.
 
 > "The frozen nodes are not lying. They are serving a real older committed
-> snapshot, and that is exactly the failure semantic majority cannot see. RAM-DNS
-> attaches the serving revision to each answer, compares the majority against the
-> committed watermark, and fails closed instead of presenting old data as
-> current."
+> snapshot, and that is exactly the failure semantic majority cannot see. Under
+> strict B the write is never acknowledged in this state; with B disabled for
+> the experiment, RAM-DNS attaches the serving revision to each answer, compares
+> the majority against the committed watermark, and fails closed instead of
+> presenting old data as current."
 
 Click **Thaw DNS snapshots** and query again: all three nodes reach the new
 revision and the resolver returns the new address.
@@ -163,12 +171,12 @@ and try to update the record.
 > "Authority is delegated top-down, ownership is proven cryptographically, state
 > is majority-replicated, every node serves DNS, and the client answer is decided
 > by majority agreement plus revision freshness. The primary correctness result
-> is the publication barrier B: a successful write should mean a majority has
-> applied the revision to the state used for DNS. RAM-DNS C is the optional
-> read-side detector. The boundaries — a root trust anchor, no Byzantine
-> tolerance, two colluding DNS nodes can lie, the A baseline is still reachable
-> for comparison, no DNSSEC, no key recovery, and a response-only watermark —
-> are documented rather than hidden."
+> is the publication barrier B: a successful write should mean a majority is
+> serving the revision through DNS. RAM-DNS C is the optional read-side detector.
+> The boundaries — a root trust anchor, no Byzantine tolerance, two colluding DNS
+> nodes can lie, the A baseline is still reachable for comparison, no DNSSEC, no
+> key recovery, and a response-only watermark — are documented rather than
+> hidden."
 
 ---
 
@@ -180,7 +188,8 @@ Run three or four live experiments:
 
 * *Duplicate registration* — `NAME_TAKEN`;
 * *Forged record update* — `UNAUTHORIZED`;
-* *Replay of a valid operation* — `REPLAY_DETECTED`;
+* *Replay of a valid operation* — deduplicated: same index and revision, no
+  second write;
 * *Stale majority is detected, not served* — semantic-only returns the old
   address; RAM-DNS returns `SERVFAIL` at the newer watermark;
 * *Revocation removes the name from DNS* — the name disappears from the zone.

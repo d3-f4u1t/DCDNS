@@ -193,12 +193,13 @@ replication push, so an immediate DNS query could see the leader at revision
 old address even though the client had been told the write succeeded.
 
 **Decision.** Add a publication barrier B, enabled by default. A write is
-acknowledged only after a majority of live nodes reports a `dns_revision` at
-least as high as the committed index. The leader counts itself only after
-refreshing its own DNS snapshot, and counts a follower only when the append
-response reports the applied revision. If the entry commits but the applied
+acknowledged only after a majority of live nodes reports a *serving* revision at
+least as high as the committed index. The leader checks the revision its own DNS
+responder would answer from, and counts a follower only when the append response
+reports that follower's serving revision. If the entry commits but a serving
 majority is not reached before the deadline, the API returns `NO_QUORUM` with
-`"ambiguous": true`.
+`"ambiguous": true`; retrying the identical signed operation is deduplicated by
+`(actor, nonce)`.
 
 **Why.** The acknowledgement should describe the state the DNS layer can
 actually serve, not merely the state that has been stored. B is the standard
@@ -213,22 +214,23 @@ The cost was one replication round trip: control ack p50 14.80 ms versus
 * B is the default write path. `--no-publication-barrier` restores the unsafe A
   baseline for comparison. A majority-visibility regression test lives in
   `tests/test_publication_visibility.py`.
-* A timeout after commit is reported honestly as ambiguous, but a
-  non-idempotent client must not retry blindly. Operation de-duplication is a
-  documented next step, not an implemented guarantee.
-* B checks the registry's `dns_revision`, not the responder's
-  `serving_revision`. A responder frozen after the registry applied the
-  revision can still let B acknowledge; RAM-DNS C covers that case only when a
-  newer revision is visible.
+* A timeout after commit is reported honestly as ambiguous. Retrying the
+  byte-identical signed operation is safe: the leader returns the original
+  index and revision with `"deduplicated": true` and appends nothing. Reusing
+  the nonce for different content is rejected with `REPLAY_DETECTED`. A client
+  that re-signs the operation creates a new nonce and therefore a new write.
+* The barrier checks the responder's `serving_revision`, not only the registry's
+  `dns_revision`. A frozen responder cannot count toward the serving majority,
+  so a write that a majority cannot serve fails closed. The stale-majority
+  experiment deliberately disables the barrier to create that read-side fault.
 * B trusts self-reported peer revisions and is not Byzantine-safe. Two
   colluding nodes can defeat it, as they can defeat the DNS majority.
 * Held writes fail closed with `NO_QUORUM` and converge after the fault is
   released; this is tested by `tests/test_commit_hold.py` and the A/B/C harness.
 
-**Production path.** Make B the default, add a regression test that queries a
-majority of DNS responders immediately after a successful write, and add
-idempotency keys or operation de-duplication so an ambiguous timeout is safe to
-retry.
+**Production path.** Keep B as the default and the majority-visibility
+regression test in CI. Operation de-duplication is implemented for byte-identical
+retries; production should also bound or compact the nonce table.
 
 ---
 
@@ -264,7 +266,7 @@ every node applies it and every test can reach it.
 | Single record type | Limited DNS usefulness | `AAAA`, `TXT`, `CNAME` with per-type validation |
 | In-memory read path | Reads may be stale on followers | Lease-based linearizable reads |
 | Publication barrier is opt-in | ~~The unsafe baseline remains the default write path~~ Resolved: B is the default; A requires `--no-publication-barrier` | A majority-visibility regression test now covers the contract |
-| Barrier timeout is ambiguous | A client cannot know whether a committed write will become visible | Idempotency keys or operation de-duplication |
+| Barrier timeout is ambiguous | A client cannot know whether a committed write will become visible | Byte-identical retries are deduplicated by `(actor, nonce)`; a re-signed retry is a new write |
 | Response-only watermark | A commit no responder has seen cannot raise it | Coordinate with the write path or use a trusted revision source |
 | Majority DNS trust | Two colluding nodes can lie | DNSSEC or signed zone snapshots |
 | One resolver process in the demo | Clients pointed at it depend on it | Replicate the resolver or compare in the stub |
