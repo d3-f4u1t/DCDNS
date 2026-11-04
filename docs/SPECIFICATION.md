@@ -19,9 +19,10 @@ state machine (`dcdns/state.py`) implements and the test suite verifies.
 5. Committed state is served as standard DNS by every registry node, and clients
    accept an answer only when a majority of nodes agrees and that majority is
    fresh relative to the committed revision watermark.
-6. With the optional publication barrier B, a successful write means that a
-   majority of registry nodes has applied the committed revision to the state
-   used for DNS answers, not merely stored it.
+6. A successful write means that a majority of registry nodes has applied the
+   committed revision to the state used for DNS answers, not merely stored it.
+   The unsafe store-only baseline remains available with
+   `--no-publication-barrier` for comparison.
 
 ## 2. Non-goals
 
@@ -228,13 +229,13 @@ suggestion to the client.
   durably stored the entry. Followers apply it only when a later replication
   push advertises the new commit index, so an immediate DNS query can observe a
   stale semantic majority.
-* **Publication barrier (B).** With `--publication-barrier`, a write is
-  acknowledged only after a majority reports applying the committed revision to
-  the state used for DNS answers. If the entry commits but the applied majority
-  is not reached before the deadline, the API returns `NO_QUORUM` with
-  `"ambiguous": true`. The operation may still become visible later, so a
-  non-idempotent retry requires client-side de-duplication. B is currently
-  opt-in; making it the default is the audit's first recommendation.
+* **Publication barrier (B).** Enabled by default. A write is acknowledged only
+  after a majority reports applying the committed revision to the state used for
+  DNS answers. If the entry commits but the applied majority is not reached
+  before the deadline, the API returns `NO_QUORUM` with `"ambiguous": true`. The
+  operation may still become visible later, so a non-idempotent retry requires
+  client-side de-duplication. `--no-publication-barrier` restores the A
+  baseline.
 * A follower applies entries only up to the leader's committed index.
 * Reads are served from local committed state and may lag briefly;
   `GET /domains/{name}?consistent=true` forces a leader read.

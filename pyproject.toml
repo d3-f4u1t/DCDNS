@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dcdns"
+dynamic = ["version"]
+description = "Replicated authoritative DNS registry with a publication-freshness testbed"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "The DCDNS Authors" }]
+keywords = ["dns", "consistency", "replication", "quorum", "freshness"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+    "cryptography>=42",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+dcdns-node = "dcdns.node:main"
+dcdns-resolver = "dcdns.quorum_resolver:main"
+dcdns-portal = "dcdns.portal:main"
+dcdns-dig = "dcdns.dig:main"
+dcdns-bootstrap = "dcdns.bootstrap:main"
+
+[project.urls]
+Homepage = "https://github.com/dcdns/dcdns"
+Documentation = "https://github.com/dcdns/dcdns/tree/main/docs"
+
+[tool.setuptools.dynamic]
+version = { attr = "dcdns.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["dcdns*"]
+
+[tool.setuptools.package-data]
+dcdns = [
+    "templates/*.html",
+    "templates/partials/*.html",
+    "static/*.js",
+    "static/*.css",
+    "static/fonts/*",
+]

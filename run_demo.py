@@ -79,6 +79,7 @@ def start_node(
     dns_port: int | None = None,
     chaos: bool = False,
     dns_key: str | None = None,
+    publication_barrier: bool = True,
 ) -> subprocess.Popen:
     peers = ",".join(
         f"{pid}=http://127.0.0.1:{port}"
@@ -100,6 +101,10 @@ def start_node(
         command.append("--chaos")
     if dns_key:
         command += ["--dns-key", dns_key]
+    command.append(
+        "--publication-barrier" if publication_barrier
+        else "--no-publication-barrier"
+    )
     return subprocess.Popen(
         command,
         cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
@@ -225,6 +230,12 @@ def main() -> int:
     parser.add_argument("--no-demo-controls", action="store_true",
                         help="hide the portal's loopback-only DNS fault controls")
     parser.add_argument(
+        "--no-publication-barrier",
+        action="store_true",
+        help="run the unsafe A baseline: acknowledge after a majority stores "
+        "the entry, before it is applied to DNS. Default is the B barrier.",
+    )
+    parser.add_argument(
         "--freshness",
         choices=["off", "f1", "f2", "f3"],
         default="f1",
@@ -322,6 +333,7 @@ def main() -> int:
                 dns_port=None if args.no_dns else DNS_PORTS[nid],
                 chaos=not args.no_dns,
                 dns_key=str(NODE_KEYS / f"{nid}.json"),
+                publication_barrier=not args.no_publication_barrier,
             )
         )
         for node_id in NODE_PORTS
@@ -344,6 +356,7 @@ def main() -> int:
                 dns_port=None if args.no_dns else DNS_PORTS[node_id],
                 chaos=not args.no_dns,
                 dns_key=str(NODE_KEYS / f"{node_id}.json"),
+                publication_barrier=not args.no_publication_barrier,
             )
             dns_note = (
                 f"  dns udp/{DNS_PORTS[node_id]}" if not args.no_dns else ""
@@ -383,6 +396,14 @@ def main() -> int:
         ))
         print(f"  Metrics     http://127.0.0.1:{DNS_METRICS_PORT}/metrics")
         print(f"  Node APIs   {', '.join(node_url(n) for n in NODE_PORTS)}")
+        print(
+            "  Write path  "
+            + (
+                "A baseline (ack before DNS publication; unsafe)"
+                if args.no_publication_barrier
+                else "B publication barrier (default)"
+            )
+        )
         if not args.no_portal:
             print(
                 "  Console     fault controls "

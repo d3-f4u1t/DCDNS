@@ -53,7 +53,7 @@ class ClusterNode:
         heartbeat_interval: float = 0.25,
         write_timeout: float = 2.5,
         request_timeout: float = 0.6,
-        publication_barrier: bool = False,
+        publication_barrier: bool = True,
     ) -> None:
         self.id = node_id
         self.url = url
@@ -66,8 +66,10 @@ class ClusterNode:
         self.request_timeout = request_timeout
 
         # Variant B: acknowledge a write only after a majority has applied the
-        # committed entry to the state used for DNS answers. Off by default so
-        # the original baseline remains available for comparison.
+        # committed entry to the state used for DNS answers. On by default: a
+        # successful write means the new revision is publishable. Pass
+        # ``publication_barrier=False`` (or ``--no-publication-barrier``) only
+        # to reproduce the unsafe A baseline for comparison.
         self.publication_barrier = publication_barrier
         self.peer_commit: dict[str, int] = {peer: 0 for peer in self.peers}
         self.peer_dns_revision: dict[str, int] = {peer: 0 for peer in self.peers}
@@ -452,6 +454,14 @@ class ClusterNode:
         return {
             "ok": True,
             "committed": True,
+            # ``barrier`` means this acknowledgement also satisfies the
+            # publication barrier: a majority has applied the revision to its
+            # DNS state. ``commit`` is the unsafe baseline, kept only for
+            # experiments.
+            "publication": (
+                "barrier" if self.publication_barrier else "commit"
+            ),
+            "publication_barrier": self.publication_barrier,
             "index": index,
             "revision": preview["revision"],
             "op": preview["op"],

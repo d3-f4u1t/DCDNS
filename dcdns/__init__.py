@@ -8,4 +8,4 @@ A permissioned registry for campus DNS namespaces with:
   * publication of committed state into a live DNS server
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

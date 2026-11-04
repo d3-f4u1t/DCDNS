@@ -30,6 +30,12 @@ than a rare race.
   staleness and partial connectivity, not as the primary fix. Do not claim
   novelty for RAM-DNS without a professional prior-art search; the core idea is
   very close to known quorum-read work.
+* **Status:** recommendation 1 is implemented. B is the default
+  (`--no-publication-barrier` opts into the A baseline), `run_demo.py` exposes
+  the choice, and `tests/test_publication_visibility.py` asserts that an
+  acknowledged write is served by a majority of DNS responders. The same test
+  runs A and shows it acknowledges with only the leader published, so the test
+  is demonstrably sensitive to the original bug.
 
 The hypothesis "this is only a DCDNS-specific artifact" is partly right. The
 *underlying* stale-quorum-read pattern is general and well known. The
@@ -502,9 +508,11 @@ No commit or push was performed.
 
 ## 9. Next steps
 
-1. Make the publication barrier the default and add a regression test that
+1. ~~Make the publication barrier the default and add a regression test that
    asserts a successful write is immediately visible from a majority of DNS
-   responders.
+   responders.~~ **Done:** B is the default, and
+   `tests/test_publication_visibility.py` covers both the barrier contract and
+   the A baseline that violates it.
 2. Add idempotency keys / operation deduplication so ambiguous timeouts are safe
    to retry.
 3. Make B report the responder's `serving_revision`, not only the registry

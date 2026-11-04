@@ -164,7 +164,7 @@ entry, while the followers apply it only on a later replication push. For a shor
 window the coordinator serves the new revision and the followers serve the old
 one, so a semantic DNS majority can return the old address after the client was
 told the write succeeded. This is a commit/apply gap, not Byzantine behaviour.
-*Mitigation:* the publication barrier B (`--publication-barrier`) acknowledges
+*Mitigation:* the publication barrier B, enabled by default, acknowledges
 only after a majority reports applying the committed revision to the DNS state.
 If that condition cannot be met before the deadline, the API returns `NO_QUORUM`
 with `"ambiguous": true` rather than falsely succeeding. RAM-DNS C can detect a
@@ -173,7 +173,7 @@ remaining stale majority on the read side, but it does not repair the write path
 non-idempotent retries need client-side de-duplication. B checks the registry's
 `dns_revision`, not the responder's `serving_revision`, so a frozen responder can
 still let B acknowledge. B trusts self-reported peer revisions and is not
-Byzantine-safe. B is currently opt-in.
+Byzantine-safe. `--no-publication-barrier` restores the unsafe A baseline.
 *Test:* A/B/C harness (`scripts/commit_lag_repro.py`), `tests/test_commit_hold.py`,
 and `docs/CONSISTENCY_AUDIT.md`.
 
@@ -206,7 +206,7 @@ verifies it itself; it does not rely on the forwarding node having done so.
 | Byzantine node | High | Out of scope; explicitly not claimed |
 | Two colluding DNS nodes | High | Majority trust boundary; DNSSEC/signed zones not built |
 | Stale majority | High | Detected by RAM-DNS F1/F2/F3; fails closed after bounded retries |
-| Acknowledged write not yet publishable | High | B closes the normal path but is opt-in; C can detect the read-side symptom; see the audit |
+| Acknowledged write not yet publishable | High | B is the default and closes the normal path; A requires `--no-publication-barrier`; C can detect the read-side symptom; see the audit |
 | Ambiguous barrier timeout | Medium | The write may commit after `NO_QUORUM`; idempotency/de-duplication is not implemented |
 | Single false-high revision | Medium | Can force fail-closed under `responses` watermark; signed tokens identify the claimant, `quorum` watermark is an alternative |
 | Watermark completeness | Medium | Response-based watermark cannot see a commit no responder has seen |
@@ -224,8 +224,9 @@ verifies it itself; it does not rely on the forwarding node having done so.
 * That the system eliminates central authority. The root authority remains.
 * That it resists a malicious registry node.
 * That two colluding DNS nodes cannot lie.
-* That B is currently the default. It is opt-in through
-  `--publication-barrier`; the audit recommends making it the default.
+* That B covers a responder frozen after applying the revision. B checks the
+  registry's `dns_revision`, not the responder's `serving_revision`; C is the
+  read-side detector for that case.
 * That B or C is Byzantine fault tolerance. B trusts self-reported peer
   revisions; C's signature proves authorship, not truth.
 * That DNS answers are DNSSEC-signed. The EDNS revision token attests revision

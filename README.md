@@ -35,16 +35,19 @@ node is honest and every committed prefix is internally consistent.
 This project makes the gap observable, measures it, and evaluates two responses.
 Variant **B**, a publication barrier, delays the write acknowledgement until a
 majority reports applying the committed revision to the state used for DNS
-answers. Variant **C**, RAM-DNS, leaves the write path unchanged and adds
-per-answer revision evidence plus a freshness condition to the client-facing
-resolver. The experiment finds that B removes the normal-path stale-majority
-window at the cost of one replication round trip, while C converts the window
-into `SERVFAIL` at a substantial lookup-latency cost. B is the correctness fix;
-C is defence in depth for responder-level staleness and partial connectivity.
+answers. It is the default write path. Variant **C**, RAM-DNS, leaves the write
+path unchanged and adds per-answer revision evidence plus a freshness condition
+to the client-facing resolver. The experiment finds that B removes the
+normal-path stale-majority window at the cost of one replication round trip,
+while C converts the window into `SERVFAIL` at a substantial lookup-latency
+cost. B is the correctness fix; C is defence in depth for responder-level
+staleness and partial connectivity.
 
-The current code keeps B behind an explicit `--publication-barrier` flag so the
-unsafe baseline remains available for comparison. **B is not yet the default.**
-Making it the default is the first recommendation of the audit.
+The unsafe A baseline remains available for comparison with
+`--no-publication-barrier`, but it is no longer the shipped behaviour: a
+successful write now means the revision is publishable to a majority of DNS
+responders. A regression test asserts exactly that contract
+(`tests/test_publication_visibility.py`).
 
 ---
 
@@ -161,7 +164,8 @@ publication contract that the HTTP API implies.
 
 ### 3.2 Barrier protocol
 
-With `--publication-barrier`, the acknowledgement condition becomes:
+With the publication barrier (the default), the acknowledgement condition
+becomes:
 
 ```text
 commit_index >= index
@@ -330,9 +334,10 @@ each node's status and serving zone.
 
 Three conditions are compared:
 
-* **A — baseline:** semantic majority; acknowledge after majority storage.
-* **B — barrier:** same cluster with `--publication-barrier`; acknowledge after a
-  majority reports applying the revision.
+* **A — baseline:** semantic majority; acknowledge after majority storage. Run
+  only with `--no-publication-barrier`.
+* **B — barrier (default):** acknowledge after a majority reports applying the
+  revision.
 * **C — RAM-DNS:** baseline answers evaluated with F1 freshness, two retries,
   `servfail` policy.
 
@@ -485,9 +490,17 @@ Windows `nslookup` does not support a custom port, which is why the project ship
 `dcdns.dig`. On Linux or macOS, `dig @127.0.0.1 -p 5353 techfest.cs.test A`
 works too.
 
-### Enabling the publication barrier
+### Publication barrier (default)
 
-The launcher does not yet expose B as a flag. To run a node with the barrier:
+B is on by default, including in `run_demo.py`. A successful write therefore
+means a majority has applied the revision to its DNS state. To reproduce the
+unsafe A baseline for comparison, pass `--no-publication-barrier`:
+
+```powershell
+python run_demo.py --fresh --no-publication-barrier
+```
+
+To run a single node with the barrier explicitly:
 
 ```powershell
 python -m dcdns.node --id n1 --port 9101 `
@@ -496,10 +509,11 @@ python -m dcdns.node --id n1 --port 9101 `
   --dns-port 5354 --chaos --publication-barrier
 ```
 
-Repeat for `n2` and `n3` with the corresponding ports and peer lists, then start
-the resolver and portal as `run_demo.py` does. The audit's first recommendation is
-to make this behaviour the default and add a regression test that queries a
-majority of DNS responders immediately after a successful write.
+The contract is asserted end-to-end by
+`tests/test_publication_visibility.py`: after an acknowledged write, at least
+two of three DNS responders must serve the new revision. The same test also runs
+the A baseline and asserts that it acknowledges with only the leader published,
+which proves the regression test is sensitive to the original bug.
 
 ---
 
@@ -534,7 +548,7 @@ python scripts/commit_lag_repro.py --trials 10 --hold-delays 0 `
 Latest verification:
 
 ```text
-python -m pytest                 108 passed
+python -m pytest                 110 passed
 python -m compileall -q dcdns scripts tests   OK
 cluster smoke                    9/9 checks passed
 portal flow                      14/14 checks passed
@@ -558,7 +572,7 @@ coordinator catch-up, and write refusal without a majority.
 | One department cannot modify another's names | Authority is a namespace tree; the longest enclosing namespace decides who may act | Experiments → *Forged update* |
 | Operations cannot be replayed | The signed payload includes a nonce that the state machine records | Experiments → *Replay* |
 | Accepted changes are durable across node loss | A write is committed only after a majority has stored it; with B it is acknowledged only after a majority applies it | `scripts/cluster_smoke.py` |
-| A successful write is publishable to DNS | With `--publication-barrier`, a majority must report applying the revision | `docs/CONSISTENCY_AUDIT.md` |
+| A successful write is publishable to DNS | On by default (B): a majority must report applying the revision; `--no-publication-barrier` restores the A baseline | `tests/test_publication_visibility.py` |
 | Every change is auditable | Hash-chained audit log; editing one record breaks every later hash | Audit page |
 | Revoked names stop resolving | A node's DNS snapshot excludes revoked domains and namespaces; pending transfers keep their frozen record live | Experiments → *Revocation* |
 | One lying DNS node cannot change the client answer | The resolver requires two of three nodes to return semantically identical answers | Experiments → *Majority DNS resists a lying node* |
@@ -703,11 +717,12 @@ The disclosure now incorporates the audit and the academic review:
 
 * Branch: `dashboard-console`. The working tree contains the audit, barrier,
   harness and documentation changes described here.
-* Tests: **108 passed**.
+* Tests: **110 passed**.
 * Compilation: `python -m compileall -q dcdns scripts tests` succeeds.
 * Cluster smoke: **9/9**. Portal flow: **14/14**. Live experiments: **12/12**.
-* B is implemented and validated but **opt-in**; C is implemented and enabled by
-  default in the demo resolver.
+* B is the default write path; `--no-publication-barrier` runs the unsafe A
+  baseline for comparison. C is implemented and enabled by default in the demo
+  resolver.
 * No commit or push has been performed for this documentation update.
 
 The honest summary is: **the stale-publication problem is real and impactful in
