@@ -130,8 +130,10 @@ def start_node(
         "--dns-key", str(dns_key),
         "--chaos",
     ]
-    if publication_barrier:
-        command.append("--publication-barrier")
+    command.append(
+        "--publication-barrier" if publication_barrier
+        else "--no-publication-barrier"
+    )
     process = subprocess.Popen(
         command,
         cwd=str(ROOT),

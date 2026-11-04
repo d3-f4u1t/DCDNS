@@ -192,13 +192,13 @@ replication push, so an immediate DNS query could see the leader at revision
 `i` and a majority at revision `i - 1`. The semantic resolver then returned the
 old address even though the client had been told the write succeeded.
 
-**Decision.** Add an optional publication barrier B. With
-`--publication-barrier`, a write is acknowledged only after a majority of live
-nodes reports a `dns_revision` at least as high as the committed index. The
-leader counts itself only after refreshing its own DNS snapshot, and counts a
-follower only when the append response reports the applied revision. If the
-entry commits but the applied majority is not reached before the deadline, the
-API returns `NO_QUORUM` with `"ambiguous": true`.
+**Decision.** Add a publication barrier B, enabled by default. A write is
+acknowledged only after a majority of live nodes reports a `dns_revision` at
+least as high as the committed index. The leader counts itself only after
+refreshing its own DNS snapshot, and counts a follower only when the append
+response reports the applied revision. If the entry commits but the applied
+majority is not reached before the deadline, the API returns `NO_QUORUM` with
+`"ambiguous": true`.
 
 **Why.** The acknowledgement should describe the state the DNS layer can
 actually serve, not merely the state that has been stored. B is the standard
@@ -210,8 +210,9 @@ The cost was one replication round trip: control ack p50 14.80 ms versus
 
 **Consequences.**
 
-* B is currently **opt-in**; the baseline remains available for comparison.
-  Making B the default is the audit's first recommendation.
+* B is the default write path. `--no-publication-barrier` restores the unsafe A
+  baseline for comparison. A majority-visibility regression test lives in
+  `tests/test_publication_visibility.py`.
 * A timeout after commit is reported honestly as ambiguous, but a
   non-idempotent client must not retry blindly. Operation de-duplication is a
   documented next step, not an implemented guarantee.
@@ -262,7 +263,7 @@ every node applies it and every test can reach it.
 | No key recovery | Lost owner key means lost domain | 2-of-3 root break-glass, audited |
 | Single record type | Limited DNS usefulness | `AAAA`, `TXT`, `CNAME` with per-type validation |
 | In-memory read path | Reads may be stale on followers | Lease-based linearizable reads |
-| Publication barrier is opt-in | The unsafe baseline remains the default write path | Make B the default and add a majority-visibility regression test |
+| Publication barrier is opt-in | ~~The unsafe baseline remains the default write path~~ Resolved: B is the default; A requires `--no-publication-barrier` | A majority-visibility regression test now covers the contract |
 | Barrier timeout is ambiguous | A client cannot know whether a committed write will become visible | Idempotency keys or operation de-duplication |
 | Response-only watermark | A commit no responder has seen cannot raise it | Coordinate with the write path or use a trusted revision source |
 | Majority DNS trust | Two colluding nodes can lie | DNSSEC or signed zone snapshots |

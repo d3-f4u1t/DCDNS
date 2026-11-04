@@ -55,10 +55,11 @@ Query `techfest.cs.test` in the DNS panel. Read the table carefully:
   `signed` tag means it verifies against that node's configured key;
 * the resolver row also shows the watermark and the majority's revisions.
 
-The launcher runs the baseline write path. The publication barrier B is opt-in
-through `--publication-barrier`, so this demo can still exhibit the
-acknowledged-write stale window; the controlled A/B/C comparison in
-`docs/CONSISTENCY_AUDIT.md` is the evidence for B.
+The launcher runs the publication barrier (B) by default, so a successful write
+means a majority has applied the revision to its DNS state. To exhibit the
+acknowledged-write stale window live, relaunch with
+`python run_demo.py --fresh --no-publication-barrier`; the controlled A/B/C
+comparison in `docs/CONSISTENCY_AUDIT.md` is the evidence for B.
 
 > "The resolver is not reading a cached dashboard value. `/query` uses the same
 > decision path as UDP 5353. The direct rows show what each node would say; the
@@ -165,8 +166,9 @@ and try to update the record.
 > is the publication barrier B: a successful write should mean a majority has
 > applied the revision to the state used for DNS. RAM-DNS C is the optional
 > read-side detector. The boundaries — a root trust anchor, no Byzantine
-> tolerance, two colluding DNS nodes can lie, B is opt-in, no DNSSEC, no key
-> recovery, and a response-only watermark — are documented rather than hidden."
+> tolerance, two colluding DNS nodes can lie, the A baseline is still reachable
+> for comparison, no DNSSEC, no key recovery, and a response-only watermark —
+> are documented rather than hidden."
 
 ---
 

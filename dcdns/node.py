@@ -35,7 +35,7 @@ def create_app(
     dns_port: int | None = None,
     chaos: bool = False,
     dns_key: str | None = None,
-    publication_barrier: bool = False,
+    publication_barrier: bool = True,
 ) -> FastAPI:
     node = ClusterNode(
         node_id=node_id,
@@ -506,9 +506,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--publication-barrier",
-        action="store_true",
-        help="variant B: acknowledge writes only after a majority has applied "
-        "them to the state used for DNS answers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="variant B (default: on): acknowledge writes only after a "
+        "majority has applied them to the state used for DNS answers. Use "
+        "--no-publication-barrier to run the unsafe A baseline.",
     )
     parser.add_argument("--log-level", default="warning")
     args = parser.parse_args()
